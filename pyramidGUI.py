@@ -1,8 +1,3 @@
-Don Juan <chazkraiza@gmail.com>
-	
-Wed, Apr 2, 10:32 AM
-	
-to me
 #!/usr/bin/env python3
 """
 gui.py - A more refined, playful GUI bridging a 1950s phone switchboard aesthetic
@@ -272,6 +267,7 @@ class VisualizationWindow(pyglet.window.Window):
             self.drawDist+= self.draw_speed* dt
         else:
             self.drawDist-= self.draw_speed* dt
+        mc.update(dt, time.time() - self.start_time)
 
     def on_draw(self):
         self.clear()

@@ -351,6 +351,34 @@ class MasterController:
                 self.pyramids.append(p)
                 self.export_pyramid_file(p)
 
+    def init_star_formation(self,
+                            count=6,
+                            radius=5.0,
+                            base_length=1.0,
+                            base_width=1.0,
+                            apex_height=2.0):
+        """Radial star arrangement of pyramids in the XZ plane."""
+        self.clear_pyramids()
+        for i in range(count):
+            angle = (i / float(count)) * (2 * math.pi)
+            x = math.cos(angle) * radius
+            z = math.sin(angle) * radius
+            p = Pyramid(
+                pyramid_id=i + 1,
+                num_corners=4,
+                base_length=base_length,
+                base_width=base_width,
+                apex_height=apex_height,
+            )
+            p.physics.position = np.array([x, 0.0, z], dtype=float)
+            p.physics.rotation[1] = -math.degrees(angle)
+            p.physics.wave_axis_enable["y"] = True
+            p.physics.wave_phase["y"] = i * 0.2
+            p.physics.wave_amplitude["y"] = 0.5
+
+            self.pyramids.append(p)
+            self.export_pyramid_file(p)
+
     # ------------------------------------------------------------------------
     # MULTI-PYRAMID MANAGEMENT
     # ------------------------------------------------------------------------
