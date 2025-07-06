@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-master_controller.py
+mastercontroller.py
 
 Significantly Enhanced for a "Globe" shape arrangement of pyramids:
 1) Uses a subdivided icosahedron to generate triangular faces on a sphere.
