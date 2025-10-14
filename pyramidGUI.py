@@ -1,8 +1,3 @@
-Don Juan <chazkraiza@gmail.com>
-	
-Wed, Apr 2, 10:32 AM
-	
-to me
 #!/usr/bin/env python3
 """
 gui.py - A more refined, playful GUI bridging a 1950s phone switchboard aesthetic
@@ -26,7 +21,7 @@ Requires:
  - pyglet
  - PyOpenGL
  - numpy
- - master_controller.py and pyramid.py in the same folder
+ - mastercontroller.py and pyramid.py in the same folder
 """
 
 import pyglet
@@ -40,10 +35,10 @@ import numpy as np
 from OpenGL.GL import *
 from OpenGL.GLU import *
 
-from master_controller import (
-    MasterController, 
+from mastercontroller import (
+    MasterController,
     PARTICLE_OFF, PARTICLE_LOW, PARTICLE_MEDIUM, PARTICLE_HEAVY,
-    # Possibly also ANIMATION_WAVE_Y, ANIMATION_SPIN, ANIMATION_PULSE
+    ANIMATION_WAVE_Y, ANIMATION_SPIN, ANIMATION_PULSE,
 )
 
 ###############################################################################
@@ -209,7 +204,6 @@ class SwitchboardWindow(pyglet.window.Window):
 
     # ANIMATION
     def on_animation_pressed(self, lbl):
-        from master_controller import (ANIMATION_WAVE_Y, ANIMATION_SPIN, ANIMATION_PULSE)
         if lbl=="WAVE":
             mc.set_animation_mode(ANIMATION_WAVE_Y)
             led_lamp.color= (0,255,0)   # green LED
@@ -268,6 +262,8 @@ class VisualizationWindow(pyglet.window.Window):
         pyglet.clock.schedule_interval(self.update, 1/60.0)
 
     def update(self, dt):
+        current_time = time.time() - self.start_time
+        mc.update(dt, current_time)
         if self.drawing_forward:
             self.drawDist+= self.draw_speed* dt
         else:

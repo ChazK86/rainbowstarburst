@@ -22,6 +22,8 @@ Requires:
 import os
 import math
 import random
+from collections import deque
+
 import numpy as np
 
 # Import the advanced Pyramid class
@@ -158,6 +160,12 @@ class MasterController:
 
         # ensure subdir
         os.makedirs("Pyramids", exist_ok=True)
+
+        # export management configuration
+        self.export_enabled = True
+        self.export_async = False
+        self.exports_per_update = 10
+        self._export_queue = deque()
 
     # ------------------------------------------------------------------------
     # ARRANGEMENTS
@@ -351,11 +359,81 @@ class MasterController:
                 self.pyramids.append(p)
                 self.export_pyramid_file(p)
 
+    def init_star_formation(self,
+                            count=5,
+                            radius=5.0,
+                            inner_radius=None,
+                            base_length=1.0,
+                            base_width=1.0,
+                            apex_height=2.0):
+        """Arrange pyramids along a classic star polygon footprint.
+
+        We alternate between ``radius`` (outer points) and ``inner_radius`` to create a
+        star-like loop on the XZ plane.  Each pyramid is placed upright and rotated so
+        that its local +Z axis points away from the origin, helping the formation feel
+        cohesive in the visualization.
+
+        Args:
+            count: Number of outer points in the star.  The total number of pyramids is
+                ``count * 2`` because we add an inner point between every pair of outer
+                points.
+            radius: Distance from the origin for the outer points.
+            inner_radius: Distance for the inner points.  Defaults to half of
+                ``radius`` if not provided.
+            base_length/base_width/apex_height: Pyramid geometry parameters.
+        """
+        self.clear_pyramids()
+
+        if count < 2:
+            return
+
+        if inner_radius is None:
+            inner_radius = radius * 0.5
+
+        pid = 1
+        angle_step = (2.0 * math.pi) / float(count)
+
+        for i in range(count):
+            outer_angle = i * angle_step
+            inner_angle = outer_angle + angle_step / 2.0
+
+            outer_pos = np.array([
+                math.cos(outer_angle) * radius,
+                0.0,
+                math.sin(outer_angle) * radius,
+            ], dtype=float)
+
+            inner_pos = np.array([
+                math.cos(inner_angle) * inner_radius,
+                0.0,
+                math.sin(inner_angle) * inner_radius,
+            ], dtype=float)
+
+            for pos in (outer_pos, inner_pos):
+                p = Pyramid(
+                    pyramid_id=pid,
+                    num_corners=4,
+                    base_length=base_length,
+                    base_width=base_width,
+                    apex_height=apex_height,
+                )
+                pid += 1
+
+                p.physics.position = pos
+                radial_norm = math.hypot(pos[0], pos[2])
+                yaw = math.degrees(math.atan2(pos[0], pos[2])) if radial_norm > 1e-9 else 0.0
+                p.physics.rotation[1] = yaw
+
+                self.pyramids.append(p)
+                self.export_pyramid_file(p)
+
     # ------------------------------------------------------------------------
     # MULTI-PYRAMID MANAGEMENT
     # ------------------------------------------------------------------------
     def clear_pyramids(self):
         self.pyramids=[]
+        if self.export_async:
+            self._export_queue.clear()
 
     def add_pyramid(self, **kwargs):
         """
@@ -426,6 +504,60 @@ class MasterController:
         self.pyramids= [p for p in self.pyramids if p.pyramid_id != pyramid_id]
 
     # ------------------------------------------------------------------------
+    # EXPORT CONFIGURATION
+    # ------------------------------------------------------------------------
+    def configure_export(self, *, enabled=None, async_mode=None, exports_per_update=None):
+        """Configure how pyramid exports are written to disk.
+
+        Args:
+            enabled: Toggle exporting on or off.
+            async_mode: When True, export requests are queued and flushed during
+                :meth:`update` to avoid blocking the render loop.
+            exports_per_update: Maximum number of queued exports to process on
+                each update tick when ``async_mode`` is enabled.
+        """
+
+        if enabled is not None:
+            self.export_enabled = bool(enabled)
+            if not self.export_enabled:
+                self._export_queue.clear()
+
+        if async_mode is not None:
+            self.export_async = bool(async_mode)
+            if not self.export_async:
+                self._export_queue.clear()
+
+        if exports_per_update is not None:
+            try:
+                exports_per_update = int(exports_per_update)
+            except (TypeError, ValueError):
+                exports_per_update = self.exports_per_update
+            self.exports_per_update = max(1, exports_per_update)
+
+    def export_pyramid_file(self, pyramid):
+        """Request an export for ``pyramid`` respecting the configured policy."""
+
+        if not self.export_enabled:
+            return
+
+        if self.export_async:
+            self._export_queue.append(pyramid)
+        else:
+            self._write_pyramid_file(pyramid)
+
+    def flush_export_queue(self):
+        """Process queued exports if asynchronous exporting is enabled."""
+
+        if not (self.export_enabled and self.export_async):
+            return
+
+        processed = 0
+        while self._export_queue and processed < self.exports_per_update:
+            pyramid = self._export_queue.popleft()
+            self._write_pyramid_file(pyramid)
+            processed += 1
+
+    # ------------------------------------------------------------------------
     # ANIMATION
     # ------------------------------------------------------------------------
     def set_animation_mode(self, mode):
@@ -471,17 +603,66 @@ class MasterController:
         if len(self.particles)> MAX_PARTICLES:
             self.particles= self.particles[-MAX_PARTICLES:]
 
+        # write any deferred exports without blocking the render/update loop
+        self.flush_export_queue()
+
     def check_collisions(self):
-        for p in self.pyramids:
-            # bounding sphere approx
-            px,py,pz= p.physics.position
-            r_approx= max(p.base_length,p.base_width)/2 + p.apex_height*0.5
-            # BUT if local_path was custom => e.g. triangular => we might do our own approach
-            # We'll just do the same approach unless you want to parse the local_path bounding
-            center= np.array([px, py+(p.apex_height*0.5), pz],dtype=float)
-            dist= np.linalg.norm(center- self.user_sphere_pos)
-            if dist < (r_approx+ self.user_sphere_radius):
-                self.handle_collision(center)
+        """Detect collisions using an oriented bounding box derived from each path."""
+
+        user_center = self.user_sphere_pos
+        radius = self.user_sphere_radius
+        radius_sq = radius * radius
+
+        for pyramid in self.pyramids:
+            path = pyramid.get_transformed_path()
+            if not path:
+                continue
+
+            pts = np.asarray(path, dtype=float)
+            if pts.shape[0] < 3:
+                # Degenerate path, fall back to a conservative sphere around position.
+                px, py, pz = pyramid.physics.position
+                approx_center = np.array([px, py + (pyramid.apex_height * 0.5), pz], dtype=float)
+                approx_radius = max(pyramid.base_length, pyramid.base_width) * 0.5 + pyramid.apex_height * 0.5
+                if np.linalg.norm(approx_center - user_center) < (approx_radius + radius):
+                    self.handle_collision(approx_center)
+                continue
+
+            center = pts.mean(axis=0)
+            centered = pts - center
+
+            if np.allclose(centered, 0.0):
+                axes = np.eye(3)
+            else:
+                cov = centered.T @ centered
+                try:
+                    eigenvalues, eigenvectors = np.linalg.eigh(cov)
+                except np.linalg.LinAlgError:
+                    axes = np.eye(3)
+                else:
+                    order = np.argsort(eigenvalues)[::-1]
+                    axes = eigenvectors[:, order]
+                    for i in range(axes.shape[1]):
+                        norm = np.linalg.norm(axes[:, i])
+                        if norm > 1e-8:
+                            axes[:, i] /= norm
+                        else:
+                            axes[:, i] = np.eye(3)[:, i]
+
+            local_coords = centered @ axes
+            extents = np.max(np.abs(local_coords), axis=0)
+            # Apply a small safety margin so narrow shapes still register collisions.
+            margin = max(pyramid.base_length, pyramid.base_width, pyramid.apex_height) * 0.05
+            extents = np.maximum(extents, margin)
+
+            rel = user_center - center
+            rel_local = rel @ axes
+            closest_local = np.clip(rel_local, -extents, extents)
+            closest_point = center + axes @ closest_local
+
+            dist_sq = np.sum((closest_point - user_center) ** 2)
+            if dist_sq <= radius_sq:
+                self.handle_collision(closest_point)
 
     def handle_collision(self, origin):
         if self.current_particle_mode==PARTICLE_OFF:
@@ -556,7 +737,7 @@ class MasterController:
     # ------------------------------------------------------------------------
     # EXPORT
     # ------------------------------------------------------------------------
-    def export_pyramid_file(self, p):
+    def _write_pyramid_file(self, p):
         """
         Writes param & labeling => "Pyramids/pyramid_{p.pyramid_id}.txt"
         capturing shape & physics state.
