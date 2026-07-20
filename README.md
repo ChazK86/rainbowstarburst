@@ -1,14 +1,15 @@
 # Rainbow Starburst
 
-This repository contains a pyglet + PyOpenGL visualization driven by `mastercontroller.py` and a switchboard-style UI in `pyramidGUI.py`.
+This repository contains a pyglet + PyOpenGL visualization driven by `mastercontroller.py` and a tactile switchboard-style UI in `pyramidGUI.py`.
 
 ## Prerequisites
 
-The project targets Python 3.9+ and depends on:
+The project targets Python 3.10+ and depends on:
 
 - [numpy](https://numpy.org/)
 - [pyglet](https://pyglet.org/)
 - [PyOpenGL](http://pyopengl.sourceforge.net/)
+- [PyAudioWPatch](https://github.com/s0d3s/PyAudioWPatch) on Windows for WASAPI loopback and microphone capture
 
 Install them into your active environment (virtualenv or system Python):
 
@@ -16,11 +17,8 @@ Install them into your active environment (virtualenv or system Python):
 pip install -r requirements.txt
 ```
 
-or directly:
-
-```bash
-pip install numpy pyglet PyOpenGL
-```
+`requirements.txt` installs the Windows audio backend conditionally, so the
+same installation command remains safe on other operating systems.
 
 On Linux you may also need system OpenGL drivers and an X11 session (or Wayland with XWayland) so pyglet can create windows.
 
@@ -32,23 +30,70 @@ The interactive entry point is the GUI module:
 python pyramidGUI.py
 ```
 
-This launches two pyglet windows:
+This launches two pyglet windows and immediately routes the animated **Star** formation so the stage is never empty:
 
-1. **Switchboard console** &mdash; buttons for changing arrangements, particle density, and animation modes along with knobs to tweak wave strength and globe subdivisions.
-2. **3D visualization** &mdash; renders the active pyramid arrangement and a rainbow path while continuously calling `MasterController.update` for physics and export scheduling.
+1. **Switchboard console** &mdash; formation routing, local audio sources, seven audio programs, manual motion, particle limits, response controls, endpoint selection, and live diagnostics.
+2. **3D visualization** &mdash; renders immutable home geometry plus bounded per-pyramid audio modulation, a moving rainbow signal path, a depth grid, and particles.
 
 Arrange both windows so they stay visible; closing either one exits the process.
 
 ## Controls
 
-- **Arrangements**: Choose Edge2Edge, SpikeSphere, Grid, Star, or Globe to rebuild the scene. Globe uses the subdivision knob and turntable to adjust density and apex offset respectively.
-- **Particle Modes**: OFF/LOW/MEDIUM/HEAVY toggle burst intensity. Modes are handled by `MasterController.set_particle_mode`.
-- **Animations**: WAVE/SPIN/PULSE/NONE set the animation mode. The LED indicator above the speaker rectangle lights up in green/red/blue depending on the active mode.
-- **Knobs**: Drag WaveAmp to scale wave motion on the Y axis for pyramids that enable it; drag GlobeSubdiv to change the next globe arrangement density. Spin the turntable disc to update the apex offset before rebuilding the globe.
+- **Arrangements**: Choose Edge2Edge, SpikeSphere, Grid, Star, or Globe to rebuild the scene. SpikeSphere spaces square pyramids over a sphere. Star is a full joined SpikeSphere: its triangular bases share edges across an icosahedral core and all apexes point outward. Globe detail is safely bounded to subdivisions 0&ndash;3 (20&ndash;1,280 faces), and the turntable sets apex offset.
+- **Audio sources**: OFF, SYSTEM, MIC, BOTH, and DEMO. Audio always starts OFF. SYSTEM follows a selected Windows WASAPI loopback endpoint, MIC opens the selected input, BOTH analyzes two independent streams, and DEMO generates a deterministic private test signal.
+- **Audio programs**: CROWN, BLOOM, ORBIT, CINEMA, RADAR, RELAY, and AURORA. Each program controls individual pyramid tips, routing, line response, and particles through the same bounded render-state contract.
+- **Manual animations**: WAVE/SPIN/PULSE/NONE remain available and mutually exclusive. Selecting manual motion stops audio capture and immediately returns reactive geometry home.
+- **Particle modes**: OFF/LOW/MEDIUM/HEAVY control click-burst intensity. Program particles remain globally capped at 2,000.
+- **Response controls**: Sensitivity controls audio gain (and manual wave depth), Reactivity controls envelope speed, Globe Detail sets the next globe density, and Apex Offset changes the next globe's tip height.
+- **Endpoint controls**: NEXT SYSTEM and NEXT MIC cycle the discovered endpoints. Selected identifiers and response preferences are stored in the current user's local application-data folder; audio never auto-starts on launch.
+- **Reduced motion**: Scales transient displacement, rotation, and particle output while preserving analysis and program routing.
+- **Viewport**: Click the visualization to emit the selected particle burst, scroll to move the camera, press Space to pause, or press R to reset the trace and camera.
+- **Keyboard**: Keys 1&ndash;5 route the five formations; Escape closes both windows.
 
-Mouse interactions are bound inside the UI window; the visualization window responds to expose events and automatically spins the camera. Use the console output for feedback on knob/arrangement changes.
+Closing either window exits the complete application.
 
 ## Data output
 
-Each time the controller creates pyramids it writes their definitions to `Pyramids/` using the deferred export queue configured in `MasterController`. You can disable exporting or change throughput programmatically before starting intensive sessions.
+Each arrangement writes its definitions to `Pyramids/`. After every switch, files matching `pyramid_<integer>.txt` mirror the active formation exactly: stale higher IDs are removed and the current IDs are rewritten. Other files and subdirectories are preserved. Exporting can still be disabled or redirected programmatically through `MasterController`.
 
+The switchboard defaults produce these managed file counts:
+
+| Formation | Files |
+| --- | ---: |
+| Edge2Edge | 7 |
+| SpikeSphere | 24 |
+| Grid | 20 |
+| Star | 80 |
+| Globe | `20 × 4^detail` (20, 80, 320, or 1,280) |
+
+## Audio architecture and privacy
+
+- Raw samples stay in bounded memory buffers and are discarded after analysis. The application does not record, transcribe, upload, or transmit audio.
+- PortAudio callbacks only copy samples. Analyzer threads publish immutable feature frames; only the pyglet render thread changes visual state.
+- System output and microphone use separate sample rates, noise floors, normalization, and analyzers. They are combined at the feature level instead of mixing unsynchronized PCM.
+- The analyzer publishes eight musical macro bands plus a 48-channel logarithmic spectrum. Every generated pyramid receives a unique center frequency from 35 Hz to 16 kHz, a distinct bandwidth, harmonic/subharmonic sensitivity, response rate, damping ratio, and phase.
+- A fixed-step resonator bank turns those acoustic identities into coupled spring motion beneath every creative program. A single tone excites a local minority of pyramids, chords create multiple clusters, and broadband sound spreads across overlapping voices.
+- Endpoint loss degrades to an unavailable status while the renderer continues. A monitor retries the selected endpoint without blocking a frame.
+- Every program returns exactly to authored home geometry after 1.5 seconds of silence. Reactive state is never written into pyramid exports.
+
+The detailed algorithms, mappings, controls, and acceptance criteria are in
+[docs/AUDIO_REACTIVE_ROADMAP.md](docs/AUDIO_REACTIVE_ROADMAP.md).
+
+## Tests
+
+Run the complete geometry, audio-feature, animation, lifecycle, and export suite with:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+The deterministic suite uses generated signals only; it never captures test audio
+from the local computer.
+
+List endpoints or inspect live normalized levels without opening the GUI:
+
+```bash
+python -m audio.diagnostic --list
+python -m audio.diagnostic --source both --seconds 10
+python -m audio.diagnostic --source demo --seconds 5
+```

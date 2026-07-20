@@ -153,12 +153,17 @@ class PyramidPhysics:
         self.gravity = 9.8
         self.bounce_factor = 0.5
         self.mass = 1.0
+        self.ground_collision_enabled = True
 
         # wave config
         self.wave_axis_enable = {"x": False, "y": False, "z": False}
         self.wave_amplitude = {"x": 0.0, "y": 0.5, "z": 0.0}
         self.wave_frequency = {"x": 1.0, "y": 1.0, "z": 1.0}
         self.wave_phase = {"x": 0.0, "y": 0.0, "z": 0.0}
+        # Wave motion is a render-time offset.  Keeping it separate from the
+        # physical position prevents the sine value from accumulating every
+        # frame and sending an animated pyramid drifting out of the scene.
+        self.wave_offset = np.zeros(3, dtype=float)
 
     def update(self, dt, current_time):
         # 1) gravity
@@ -171,7 +176,7 @@ class PyramidPhysics:
         self.rotation += self.angular_velocity * dt
 
         # 4) bounce
-        if self.position[1]<0:
+        if self.ground_collision_enabled and self.position[1]<0:
             self.position[1] =0
             self.velocity[1] =-self.velocity[1]*self.bounce_factor
 
@@ -184,7 +189,7 @@ class PyramidPhysics:
                 ph = self.wave_phase[ax]
                 val = amp* math.sin(freq*current_time + ph)
                 wave_offset[idx] = val
-        self.position += wave_offset
+        self.wave_offset = wave_offset
 
     def apply_forward_thrust(self, force, dt):
         """
@@ -250,8 +255,9 @@ class Pyramid:
         Returns final (x,y,z) points after corner offsets & physics transform.
         """
         mod_path = self._apply_corner_offsets_to_local_path(self.local_path)
+        visual_position = self.physics.position + self.physics.wave_offset
         return self.transform_path(mod_path,
-                                   self.physics.position,
+                                   visual_position,
                                    self.physics.rotation)
 
     def set_corner_offset(self, corner_index, offset_vec):
