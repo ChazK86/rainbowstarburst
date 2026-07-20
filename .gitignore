@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Runtime-generated scene definitions.  The application keeps this set in sync
+# with the active switchboard formation.
+Pyramids/pyramid_*.txt
+
+*.log

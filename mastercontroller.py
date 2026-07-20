@@ -35,6 +35,7 @@ PARTICLE_LOW    = "LOW"
 PARTICLE_MEDIUM = "MEDIUM"
 PARTICLE_HEAVY  = "HEAVY"
 MAX_PARTICLES   = 2000
+MAX_GLOBE_SUBDIVISIONS = 3
 
 class Particle:
     """
@@ -74,6 +75,12 @@ def generate_icosahedron_faces(subdivisions=0):
     The result is a list of triangular faces that can be used to place triangular pyramids
     around an invisible core.
     """
+    try:
+        subdivisions = int(subdivisions)
+    except (TypeError, ValueError):
+        subdivisions = 0
+    subdivisions = max(0, min(MAX_GLOBE_SUBDIVISIONS, subdivisions))
+
     # Basic icosahedron coordinates (golden ratio approach)
     t  = (1.0 + math.sqrt(5.0)) / 2.0
     verts = [
@@ -140,6 +147,22 @@ def normalize_vec(v):
         return v
     return v/d
 
+
+def rotation_aligning_apex(direction):
+    """Return Euler angles that rotate local +Y toward ``direction``.
+
+    ``Pyramid.transform_path`` applies ``Rz @ Ry @ Rx``.  Holding yaw at zero
+    gives a stable two-angle solution and avoids the half-sphere collapse caused
+    by leaving every spike upright.
+    """
+    direction = normalize_vec(np.asarray(direction, dtype=float))
+    if np.linalg.norm(direction) < 1e-9:
+        return np.zeros(3, dtype=float)
+    x, y, z = direction
+    pitch = math.degrees(math.asin(max(-1.0, min(1.0, z))))
+    roll = math.degrees(math.atan2(-x, y))
+    return np.array([pitch, 0.0, roll], dtype=float)
+
 ###############################################################################
 # MASTER CONTROLLER
 ###############################################################################
@@ -150,7 +173,7 @@ class MasterController:
     that creates triangular-based pyramids around a subdivided icosahedron for
     a 'globe' shape with minimal overlap and apex outward from the core.
     """
-    def __init__(self):
+    def __init__(self, export_directory="Pyramids"):
         self.pyramids = []
         self.particles= []
         self.current_particle_mode = PARTICLE_OFF
@@ -158,8 +181,10 @@ class MasterController:
         self.user_sphere_pos    = np.array([0,0,0],dtype=float)
         self.user_sphere_radius = 0.5
 
-        # ensure subdir
-        os.makedirs("Pyramids", exist_ok=True)
+        # Keep generated definitions in one resolved directory.  The exporter
+        # only manages files matching ``pyramid_<integer>.txt`` inside it.
+        self.export_directory = os.path.abspath(export_directory)
+        os.makedirs(self.export_directory, exist_ok=True)
 
         # export management configuration
         self.export_enabled = True
@@ -194,7 +219,7 @@ class MasterController:
           animation mode or do it manually.
         - We store each pyramid => 'Pyramids/pyramid_{ID}.txt' with unique ID.
         """
-        self.clear_pyramids()
+        self.clear_pyramids(prune_exports=False)
 
         faces = generate_icosahedron_faces(subdivisions=subdivisions)
         pid = start_id
@@ -245,12 +270,16 @@ class MasterController:
 
             # store custom path
             p.local_path = custom_path
+            p.physics.gravity = 0.0
+            p.physics.ground_collision_enabled = False
 
             # We'll place the pyramid's physics.position= [0,0,0], no wave by default.
             # if you want wave/spin, do set_animation_mode(...) or individually set it.
 
             self.pyramids.append(p)
             self.export_pyramid_file(p)
+
+        self.sync_export_files()
 
     def init_edge_to_edge_pyramids(self,
                                    count=5,
@@ -261,9 +290,10 @@ class MasterController:
         """
         The older method => line arrangement
         """
-        self.clear_pyramids()
+        self.clear_pyramids(prune_exports=False)
 
         x_offset= base_length
+        start_x = -(count - 1) * x_offset / 2.0
         for i in range(count):
             pid= i+1
             p= Pyramid(
@@ -273,13 +303,17 @@ class MasterController:
                 base_width  = base_width,
                 apex_height = apex_height
             )
-            p.physics.position[0]= i*x_offset
+            p.physics.position[0]= start_x + i*x_offset
+            p.physics.gravity=0.0
+            p.physics.ground_collision_enabled=False
             # wave
             p.physics.wave_axis_enable["y"]=True
             p.physics.wave_phase["y"]= i*wave_offset
             p.physics.wave_amplitude["y"]=0.5
             self.pyramids.append(p)
             self.export_pyramid_file(p)
+
+        self.sync_export_files()
 
     def init_spike_sphere_pyramids(self,
                                    count=8,
@@ -290,8 +324,10 @@ class MasterController:
         """
         The older spike approach => random fibonacci faces
         """
-        self.clear_pyramids()
-        if count<1:return
+        self.clear_pyramids(prune_exports=False)
+        if count<1:
+            self.sync_export_files()
+            return
 
         phi= math.pi*(3.0- math.sqrt(5.0))
         for i in range(count):
@@ -315,6 +351,9 @@ class MasterController:
                 apex_height  = apex_height
             )
             p.physics.position= dir_vec*sphere_radius
+            p.physics.rotation= rotation_aligning_apex(dir_vec)
+            p.physics.gravity=0.0
+            p.physics.ground_collision_enabled=False
             # apex outward => wave off
             p.physics.wave_axis_enable["x"]=False
             p.physics.wave_axis_enable["y"]=False
@@ -322,6 +361,8 @@ class MasterController:
 
             self.pyramids.append(p)
             self.export_pyramid_file(p)
+
+        self.sync_export_files()
 
     def init_grid_pyramids(self,
                            rows=3,
@@ -334,7 +375,7 @@ class MasterController:
         """
         The older 2D grid approach
         """
-        self.clear_pyramids()
+        self.clear_pyramids(prune_exports=False)
         pid=1
         start_x= -(cols-1)*spacing_x/2
         start_z= -(rows-1)*spacing_z/2
@@ -351,6 +392,8 @@ class MasterController:
                 px= start_x + c* spacing_x
                 pz= start_z + r* spacing_z
                 p.physics.position= np.array([px,0,pz],dtype=float)
+                p.physics.gravity=0.0
+                p.physics.ground_collision_enabled=False
                 # wave on y
                 p.physics.wave_axis_enable["y"]=True
                 p.physics.wave_phase["y"]= (r+c)*0.3
@@ -359,81 +402,69 @@ class MasterController:
                 self.pyramids.append(p)
                 self.export_pyramid_file(p)
 
+        self.sync_export_files()
+
     def init_star_formation(self,
-                            count=5,
-                            radius=5.0,
-                            inner_radius=None,
-                            base_length=1.0,
-                            base_width=1.0,
-                            apex_height=2.0):
-        """Arrange pyramids along a classic star polygon footprint.
+                            subdivisions=1,
+                            core_radius=3.0,
+                            spike_height=2.4,
+                            start_id=1):
+        """Build a closed, full star from edge-sharing radial pyramids.
 
-        We alternate between ``radius`` (outer points) and ``inner_radius`` to create a
-        star-like loop on the XZ plane.  Each pyramid is placed upright and rotated so
-        that its local +Z axis points away from the origin, helping the formation feel
-        cohesive in the visualization.
+        The bases are the triangular faces of one subdivided icosahedral core.
+        Adjacent pyramids therefore share the exact same base edge instead of
+        floating at unrelated Fibonacci-sphere positions.  Every apex extends
+        outward from its face, producing a joined SpikeSphere / full star.
 
-        Args:
-            count: Number of outer points in the star.  The total number of pyramids is
-                ``count * 2`` because we add an inner point between every pair of outer
-                points.
-            radius: Distance from the origin for the outer points.
-            inner_radius: Distance for the inner points.  Defaults to half of
-                ``radius`` if not provided.
-            base_length/base_width/apex_height: Pyramid geometry parameters.
+        ``subdivisions=0`` creates 20 broad spikes and ``subdivisions=1`` creates
+        80 finer spikes.  The global safety limit also applies here.
         """
-        self.clear_pyramids()
+        self.clear_pyramids(prune_exports=False)
 
-        if count < 2:
-            return
+        faces = generate_icosahedron_faces(subdivisions=subdivisions)
+        pid = int(start_id)
+        for v1, v2, v3 in faces:
+            c1 = np.asarray(v1, dtype=float) * core_radius
+            c2 = np.asarray(v2, dtype=float) * core_radius
+            c3 = np.asarray(v3, dtype=float) * core_radius
+            face_center = (c1 + c2 + c3) / 3.0
+            face_normal = normalize_vec(face_center)
+            apex = face_center + face_normal * spike_height
 
-        if inner_radius is None:
-            inner_radius = radius * 0.5
+            p = Pyramid(
+                pyramid_id=pid,
+                num_corners=3,
+                base_length=core_radius,
+                base_width=core_radius,
+                apex_height=spike_height,
+            )
+            pid += 1
 
-        pid = 1
-        angle_step = (2.0 * math.pi) / float(count)
+            # A continuous path around the shared triangular base and out along
+            # every spike edge.  The base vertices are reused verbatim between
+            # neighboring faces, which is what guarantees edge-to-edge contact.
+            p.local_path = [
+                c1, c2, c3, c1,
+                apex, c2, apex, c3, apex, c1,
+            ]
+            p.physics.gravity = 0.0
+            p.physics.ground_collision_enabled = False
 
-        for i in range(count):
-            outer_angle = i * angle_step
-            inner_angle = outer_angle + angle_step / 2.0
+            self.pyramids.append(p)
+            self.export_pyramid_file(p)
 
-            outer_pos = np.array([
-                math.cos(outer_angle) * radius,
-                0.0,
-                math.sin(outer_angle) * radius,
-            ], dtype=float)
-
-            inner_pos = np.array([
-                math.cos(inner_angle) * inner_radius,
-                0.0,
-                math.sin(inner_angle) * inner_radius,
-            ], dtype=float)
-
-            for pos in (outer_pos, inner_pos):
-                p = Pyramid(
-                    pyramid_id=pid,
-                    num_corners=4,
-                    base_length=base_length,
-                    base_width=base_width,
-                    apex_height=apex_height,
-                )
-                pid += 1
-
-                p.physics.position = pos
-                radial_norm = math.hypot(pos[0], pos[2])
-                yaw = math.degrees(math.atan2(pos[0], pos[2])) if radial_norm > 1e-9 else 0.0
-                p.physics.rotation[1] = yaw
-
-                self.pyramids.append(p)
-                self.export_pyramid_file(p)
+        self.sync_export_files()
 
     # ------------------------------------------------------------------------
     # MULTI-PYRAMID MANAGEMENT
     # ------------------------------------------------------------------------
-    def clear_pyramids(self):
+    def clear_pyramids(self, prune_exports=True):
         self.pyramids=[]
+        self.particles=[]
         if self.export_async:
             self._export_queue.clear()
+        if prune_exports:
+            self.sync_export_files()
 
     def add_pyramid(self, **kwargs):
         """
@@ -458,6 +489,7 @@ class MasterController:
             return
         targ.set_pyramid_id(new_id)
         self.export_pyramid_file(targ)
+        self.sync_export_files()
 
     def replicate_pyramid(self, source_id, new_id):
         src=None
@@ -491,6 +523,7 @@ class MasterController:
         clone.physics.gravity          = src.physics.gravity
         clone.physics.bounce_factor    = src.physics.bounce_factor
         clone.physics.mass             = src.physics.mass
+        clone.physics.ground_collision_enabled = src.physics.ground_collision_enabled
 
         # if custom local_path was set => also replicate that
         # e.g. for triangular face pyramids
@@ -502,6 +535,7 @@ class MasterController:
 
     def remove_pyramid(self, pyramid_id):
         self.pyramids= [p for p in self.pyramids if p.pyramid_id != pyramid_id]
+        self.sync_export_files()
 
     # ------------------------------------------------------------------------
     # EXPORT CONFIGURATION
@@ -557,15 +591,51 @@ class MasterController:
             self._write_pyramid_file(pyramid)
             processed += 1
 
+    def sync_export_files(self):
+        """Remove stale managed exports so the directory mirrors the live scene.
+
+        Only exact ``pyramid_<integer>.txt`` files in ``export_directory`` are
+        touched.  Other files and subdirectories are deliberately ignored.
+        """
+        if not self.export_enabled:
+            return
+
+        active_ids = {int(p.pyramid_id) for p in self.pyramids}
+        try:
+            entries = os.scandir(self.export_directory)
+        except FileNotFoundError:
+            os.makedirs(self.export_directory, exist_ok=True)
+            return
+
+        with entries:
+            for entry in entries:
+                if not entry.is_file(follow_symlinks=False):
+                    continue
+                name = entry.name
+                if not (name.startswith("pyramid_") and name.endswith(".txt")):
+                    continue
+                id_text = name[len("pyramid_"):-len(".txt")]
+                if not id_text.isdigit():
+                    continue
+                if int(id_text) not in active_ids:
+                    os.remove(entry.path)
+
     # ------------------------------------------------------------------------
     # ANIMATION
     # ------------------------------------------------------------------------
     def set_animation_mode(self, mode):
+        # Animation modes are mutually exclusive.  The old implementation left
+        # angular velocity running when switching from SPIN to WAVE/PULSE.
+        for p in self.pyramids:
+            p.physics.wave_axis_enable["x"]=False
+            p.physics.wave_axis_enable["y"]=False
+            p.physics.wave_axis_enable["z"]=False
+            p.physics.wave_offset[:]=0.0
+            p.physics.angular_velocity[:]=0.0
+
         if mode== ANIMATION_WAVE_Y:
             for p in self.pyramids:
-                p.physics.wave_axis_enable["x"]=False
                 p.physics.wave_axis_enable["y"]=True
-                p.physics.wave_axis_enable["z"]=False
                 p.physics.wave_amplitude["y"]=1.0
                 p.physics.wave_frequency["y"]=1.0
         elif mode== ANIMATION_SPIN:
@@ -576,13 +646,6 @@ class MasterController:
                 p.physics.wave_axis_enable["y"]=True
                 p.physics.wave_amplitude["y"]=2.0
                 p.physics.wave_frequency["y"]=2.0
-        else:
-            # disable wave/spin
-            for p in self.pyramids:
-                p.physics.wave_axis_enable["x"]=False
-                p.physics.wave_axis_enable["y"]=False
-                p.physics.wave_axis_enable["z"]=False
-                p.physics.angular_velocity[:]=0.0
 
     # ------------------------------------------------------------------------
     # UPDATE
@@ -742,9 +805,8 @@ class MasterController:
         Writes param & labeling => "Pyramids/pyramid_{p.pyramid_id}.txt"
         capturing shape & physics state.
         """
-        subdir="Pyramids"
         fname= f"pyramid_{p.pyramid_id}.txt"
-        path= os.path.join(subdir,fname)
+        path= os.path.join(self.export_directory,fname)
 
         with open(path,"w") as f:
             f.write(f"** Pyramid ID= {p.pyramid_id} **\n")
@@ -770,6 +832,7 @@ class MasterController:
             f.write(f"  wave_frequency= {p.physics.wave_frequency}\n")
             f.write(f"  wave_phase= {p.physics.wave_phase}\n")
             f.write(f"  gravity= {p.physics.gravity}, bounce= {p.physics.bounce_factor}, mass= {p.physics.mass}\n")
+            f.write(f"  ground_collision_enabled= {p.physics.ground_collision_enabled}\n")
 
         print(f"[export_pyramid_file] => Created {path}")
 

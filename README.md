@@ -1,6 +1,6 @@
 # Rainbow Starburst
 
-This repository contains a pyglet + PyOpenGL visualization driven by `mastercontroller.py` and a switchboard-style UI in `pyramidGUI.py`.
+This repository contains a pyglet + PyOpenGL visualization driven by `mastercontroller.py` and a tactile switchboard-style UI in `pyramidGUI.py`.
 
 ## Prerequisites
 
@@ -32,23 +32,46 @@ The interactive entry point is the GUI module:
 python pyramidGUI.py
 ```
 
-This launches two pyglet windows:
+This launches two pyglet windows and immediately routes the animated **Star** formation so the stage is never empty:
 
-1. **Switchboard console** &mdash; buttons for changing arrangements, particle density, and animation modes along with knobs to tweak wave strength and globe subdivisions.
-2. **3D visualization** &mdash; renders the active pyramid arrangement and a rainbow path while continuously calling `MasterController.update` for physics and export scheduling.
+1. **Switchboard console** &mdash; illuminated controls for arrangements, particle gain, and animation programs plus bounded knobs for wave strength and globe detail.
+2. **3D visualization** &mdash; renders the active formation, its animated rainbow signal path, a depth grid, and interactive particle bursts.
 
 Arrange both windows so they stay visible; closing either one exits the process.
 
 ## Controls
 
-- **Arrangements**: Choose Edge2Edge, SpikeSphere, Grid, Star, or Globe to rebuild the scene. Globe uses the subdivision knob and turntable to adjust density and apex offset respectively.
+- **Arrangements**: Choose Edge2Edge, SpikeSphere, Grid, Star, or Globe to rebuild the scene. SpikeSphere spaces square pyramids over a sphere. Star is a full joined SpikeSphere: its triangular bases share edges across an icosahedral core and all apexes point outward. Globe detail is safely bounded to subdivisions 0&ndash;3 (20&ndash;1,280 faces), and the turntable sets apex offset.
 - **Particle Modes**: OFF/LOW/MEDIUM/HEAVY toggle burst intensity. Modes are handled by `MasterController.set_particle_mode`.
-- **Animations**: WAVE/SPIN/PULSE/NONE set the animation mode. The LED indicator above the speaker rectangle lights up in green/red/blue depending on the active mode.
-- **Knobs**: Drag WaveAmp to scale wave motion on the Y axis for pyramids that enable it; drag GlobeSubdiv to change the next globe arrangement density. Spin the turntable disc to update the apex offset before rebuilding the globe.
+- **Animations**: WAVE/SPIN/PULSE/NONE are mutually exclusive motion programs. The signal monitor changes color with the active program.
+- **Knobs**: Drag Wave Amplitude to scale non-accumulating wave motion; drag Globe Detail to set the next globe density. Spin Apex Offset before rebuilding the globe.
+- **Viewport**: Click the visualization to emit the selected particle burst, scroll to move the camera, press Space to pause, or press R to reset the trace and camera.
+- **Keyboard**: Keys 1&ndash;5 route the five formations; Escape closes both windows.
 
-Mouse interactions are bound inside the UI window; the visualization window responds to expose events and automatically spins the camera. Use the console output for feedback on knob/arrangement changes.
+Closing either window exits the complete application.
 
 ## Data output
 
-Each time the controller creates pyramids it writes their definitions to `Pyramids/` using the deferred export queue configured in `MasterController`. You can disable exporting or change throughput programmatically before starting intensive sessions.
+Each arrangement writes its definitions to `Pyramids/`. After every switch, files matching `pyramid_<integer>.txt` mirror the active formation exactly: stale higher IDs are removed and the current IDs are rewritten. Other files and subdirectories are preserved. Exporting can still be disabled or redirected programmatically through `MasterController`.
 
+The switchboard defaults produce these managed file counts:
+
+| Formation | Files |
+| --- | ---: |
+| Edge2Edge | 7 |
+| SpikeSphere | 24 |
+| Grid | 20 |
+| Star | 80 |
+| Globe | `20 × 4^detail` (20, 80, 320, or 1,280) |
+
+## Tests
+
+Run the geometry, animation, and export synchronization checks with:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+## Next: local audio reactivity
+
+The implementation-ready plan for Windows system-output capture, microphone input, per-pyramid modulation architecture, and seven creative reactive programs is in [docs/AUDIO_REACTIVE_ROADMAP.md](docs/AUDIO_REACTIVE_ROADMAP.md).
