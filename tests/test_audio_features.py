@@ -5,7 +5,7 @@ import unittest
 import numpy as np
 
 from audio.engine import AudioEngine, AudioSourceMode
-from audio.features import FeatureAnalyzer
+from audio.features import FeatureAnalyzer, SPECTRUM_FREQUENCIES
 from audio.ring_buffer import AudioRingBuffer
 
 
@@ -43,6 +43,16 @@ class FeatureAnalyzerTests(unittest.TestCase):
                 feature = analyze_tone(frequency)
                 self.assertEqual(int(np.argmax(feature.bands)), band)
                 self.assertGreater(feature.bands[band], 0.14)
+
+    def test_fine_spectrum_tracks_tones_to_within_one_third_octave(self):
+        for frequency in (50, 110, 440, 1000, 4000, 10000):
+            with self.subTest(frequency=frequency):
+                feature = analyze_tone(frequency)
+                peak_frequency = float(
+                    SPECTRUM_FREQUENCIES[int(np.argmax(feature.spectrum))]
+                )
+                octave_error = abs(math.log2(peak_frequency / frequency))
+                self.assertLessEqual(octave_error, 0.43)
 
     def test_stereo_balance_reports_left_center_and_right_only(self):
         rate, hop = 48000, 512

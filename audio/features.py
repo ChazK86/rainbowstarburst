@@ -23,6 +23,16 @@ BAND_EDGES = (
     (7500.0, 16000.0),
 )
 
+SPECTRUM_BIN_COUNT = 48
+SPECTRUM_MIN_HZ = 35.0
+SPECTRUM_MAX_HZ = 16000.0
+SPECTRUM_EDGES = np.geomspace(
+    SPECTRUM_MIN_HZ,
+    SPECTRUM_MAX_HZ,
+    SPECTRUM_BIN_COUNT + 1,
+)
+SPECTRUM_FREQUENCIES = np.sqrt(SPECTRUM_EDGES[:-1] * SPECTRUM_EDGES[1:])
+
 
 @dataclass(frozen=True)
 class SourceFeatures:
@@ -30,6 +40,7 @@ class SourceFeatures:
     rms: float = 0.0
     peak: float = 0.0
     bands: tuple[float, ...] = (0.0,) * 8
+    spectrum: tuple[float, ...] = (0.0,) * SPECTRUM_BIN_COUNT
     centroid: float = 0.0
     flux: float = 0.0
     onset: bool = False
@@ -50,7 +61,15 @@ class SourceFeatures:
         return cls()
 
     def muted(self) -> "SourceFeatures":
-        return replace(self, active=False, rms=0.0, peak=0.0, bands=(0.0,) * 8, onset=False)
+        return replace(
+            self,
+            active=False,
+            rms=0.0,
+            peak=0.0,
+            bands=(0.0,) * 8,
+            spectrum=(0.0,) * SPECTRUM_BIN_COUNT,
+            onset=False,
+        )
 
 
 @dataclass(frozen=True)
@@ -94,6 +113,11 @@ class FeatureAnalyzer:
         self._band_masks = [
             (self._frequency >= low) & (self._frequency < min(high, self.sample_rate / 2.0))
             for low, high in BAND_EDGES
+        ]
+        self._spectrum_masks = [
+            (self._frequency >= low)
+            & (self._frequency < min(high, self.sample_rate / 2.0))
+            for low, high in zip(SPECTRUM_EDGES[:-1], SPECTRUM_EDGES[1:])
         ]
         self._pitch_mask = (self._frequency >= 55.0) & (self._frequency <= min(5000.0, self.sample_rate / 2.0))
 
@@ -153,6 +177,21 @@ class FeatureAnalyzer:
                 1.0,
             ))
             for normalizer, value in zip(self._band_ranges, raw_bands)
+        )
+        raw_spectrum = np.array(
+            [
+                float(np.sqrt(np.mean(power[mask]))) if np.any(mask) else 0.0
+                for mask in self._spectrum_masks
+            ],
+            dtype=float,
+        )
+        spectral_peak = max(float(raw_spectrum.max(initial=0.0)), 1e-12)
+        # Preserve the relative shape of each frame instead of independently
+        # normalizing fine bins, which would exaggerate leakage and noise.
+        spectrum_values = np.clip(
+            np.power(raw_spectrum / spectral_peak, 0.55) * math.sqrt(max(0.0, rms)),
+            0.0,
+            1.0,
         )
 
         useful = self._frequency <= min(16000.0, self.sample_rate / 2.0)
@@ -216,6 +255,7 @@ class FeatureAnalyzer:
             rms=rms,
             peak=peak,
             bands=band_values,
+            spectrum=tuple(float(value) for value in spectrum_values),
             centroid=centroid,
             flux=flux,
             onset=onset,

@@ -96,6 +96,7 @@ class CombinedFeatures:
     rms: float
     peak: float
     bands: np.ndarray
+    spectrum: np.ndarray
     centroid: float
     flux: float
     onset: bool
@@ -120,6 +121,7 @@ def combine_features(frame: AudioFeatureFrame) -> CombinedFeatures:
     else:
         weights /= total
     bands = np.maximum(np.asarray(system.bands), np.asarray(microphone.bands))
+    spectrum = np.maximum(np.asarray(system.spectrum), np.asarray(microphone.spectrum))
     pitches = weights[0] * np.asarray(system.pitch_classes) + weights[1] * np.asarray(microphone.pitch_classes)
     dominant = system if system.rms >= microphone.rms else microphone
     return CombinedFeatures(
@@ -127,6 +129,7 @@ def combine_features(frame: AudioFeatureFrame) -> CombinedFeatures:
         rms=max(system.rms, microphone.rms),
         peak=max(system.peak, microphone.peak),
         bands=bands,
+        spectrum=spectrum,
         centroid=float(weights[0] * system.centroid + weights[1] * microphone.centroid),
         flux=max(system.flux, microphone.flux),
         onset=system.onset or microphone.onset,

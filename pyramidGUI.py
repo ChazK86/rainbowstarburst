@@ -616,7 +616,10 @@ class SwitchboardWindow(pyglet.window.Window):
         self.mic_meter.width = int(244 * frame.microphone.rms)
         self.system_meter.color = PALETTE["teal"] if frame.system.active else PALETTE["line"]
         self.mic_meter.color = PALETTE["amber"] if frame.microphone.active else PALETTE["line"]
-        self.telemetry.text = f"{frame.capture_latency_ms:4.1f} MS  •  {frame.dropped_windows} DROPPED  •  {status['backend']}"
+        self.telemetry.text = (
+            f"{frame.capture_latency_ms:4.1f} MS  •  {frame.dropped_windows} DROPPED  "
+            f"•  {len(mc.pyramids)} RESONANT VOICES"
+        )
         if self.active_source != "OFF":
             system_state = status["system"].state
             mic_state = status["microphone"].state

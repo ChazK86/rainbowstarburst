@@ -21,9 +21,10 @@ class SpectrumCrown(AudioAnimation):
     def update(self, dt, now, frame, gain=1.0, reactivity=1.0):
         del now
         feature = combine_features(frame)
-        target = self.topology.band_influence @ np.clip(feature.bands * gain, 0.0, 1.0)
-        target /= np.maximum(self.topology.band_influence.sum(axis=1), 0.45)
-        target = np.clip(target * 2.2, 0.0, 1.0)
+        macro = self.topology.band_influence @ np.clip(feature.bands * gain, 0.0, 1.0)
+        macro /= np.maximum(self.topology.band_influence.sum(axis=1), 0.45)
+        micro = self.topology.resonance_weights @ np.asarray(feature.spectrum)
+        target = np.clip(macro * 0.55 + micro * gain * 2.7, 0.0, 1.0)
         smooth(self.energy, target, dt, attack=0.025 / reactivity, release=0.34 / reactivity)
         self.state.apex_scale[:] = 1.0 + 0.72 * np.power(self.energy, 1.35)
         self.state.radial_offset[:] = 0.16 * self.topology.core_radius * self.energy
@@ -31,12 +32,11 @@ class SpectrumCrown(AudioAnimation):
         self.state.line_alpha[:] = 0.62 + 0.38 * self.energy
         self.state.line_width[:] = 1.35 + 1.65 * self.energy
         self.state.accent_mix[:] = 0.72 * self.energy
-        primary_band = np.argmax(self.topology.band_influence, axis=1)
-        self.state.accent_hue[:] = np.mod(feature.centroid * 0.45 + primary_band / 8.0, 1.0)
+        frequency_fraction = np.log2(self.topology.resonant_frequencies / 35.0) / np.log2(16000.0 / 35.0)
+        self.state.accent_hue[:] = np.mod(feature.centroid * 0.25 + frequency_fraction, 1.0)
         self.spark *= np.exp(-dt / 0.16)
         if self.is_new_frame(frame) and feature.onset:
-            strongest_band = int(np.argmax(feature.bands))
-            cluster = self.topology.band_influence[:, strongest_band]
+            cluster = np.clip(micro * 4.0, 0.0, 1.0)
             self.spark += cluster * (2.0 + 10.0 * feature.flux)
         self.state.particle_rate[:] = self.spark
         self.state.route = self.topology.greedy_route(self.energy)

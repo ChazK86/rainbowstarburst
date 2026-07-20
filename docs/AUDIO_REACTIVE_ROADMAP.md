@@ -17,6 +17,7 @@ The cohesive baseline described here is implemented on the audio-reactivity bran
 
 - bounded callback ring buffers, WASAPI loopback, microphone capture, simultaneous independent streams, deterministic demo input, endpoint cycling, and automatic retry;
 - normalized FFT bands, multiscale levels, centroid, spectral flux, onset/refractory behavior, beat phase/confidence, stereo balance/width, pitch classes, octave position, and spectral flatness;
+- a 48-channel logarithmic spectral field and one unique acoustic identity per generated pyramid, including interpolated center frequency, bandwidth, harmonic/subharmonic mixture, mechanical response, damping, phase, and shared-edge coupling;
 - immutable formation topology, exact shared-edge adjacency, fallback proximity graphs, render-state bounds, 250 ms program crossfades, reduced motion, and exact 1.5-second silence reset;
 - Spectrum Crown, Beat Bloom, Conversation Orbit, Cinematic Weather, Game Radar, Signal Relay, and Harmonic Aurora;
 - switchboard source/program/device/response controls, privacy status, level meters, latency/drop telemetry, and preserved manual programs;
@@ -108,6 +109,7 @@ rainbowstarburst/
     __init__.py
     base.py             # AudioAnimation protocol and parameter schema
     director.py         # mode lifecycle and modulation composition
+    resonance.py        # unique per-pyramid acoustic identities and springs
     topology.py         # face normals, shared-edge graph, geodesic distances
     spectrum_crown.py
     beat_bloom.py
@@ -188,6 +190,8 @@ The first implementation should use NumPy only:
 8. detect onsets from adaptive spectral-flux thresholds with a refractory interval;
 9. estimate pulse from onset intervals only after a stable confidence threshold is met.
 
+The implemented analyzer also integrates 48 logarithmic spectral channels from 35 Hz to 16 kHz. These preserve fine spectral shape without independently amplifying leakage in quiet bins. Formation topology maps that field to a unique resonant center for every pyramid, interpolating between analysis channels when a formation has more than 48 members.
+
 SciPy `ShortTimeFFT` and `find_peaks` are optional upgrades after the NumPy baseline is profiled. Librosa is a reference for onset and beat behavior, not an initial real-time dependency.
 
 ### Latency and performance budget
@@ -216,6 +220,19 @@ All programs use the following channels so switching modes feels cohesive:
 - **rest:** an exact return to authored home geometry.
 
 The `AnimationDirector` owns these channels. A program emits target values, and the director applies clamping, attack/release, reduced-motion scaling, and return-to-rest behavior.
+
+### Organic pyramid resonance layer
+
+Every audio program is composed with the same micro-dynamics layer:
+
+1. Geometry-derived spiral order assigns distinct logarithmic center frequencies from 35 Hz to 16 kHz.
+2. Each pyramid receives deterministic bandwidth and fundamental, second-harmonic, third-harmonic, and subharmonic weights.
+3. The fine spectrum drives one underdamped spring per pyramid at a fixed 120 Hz simulation step.
+4. Individual stiffness, damping ratio, modulation phase, and motion rate prevent matched pyramids from moving as synchronized clones.
+5. Weak graph coupling transfers some energy across exact shared edges without overwhelming each pyramid's acoustic identity.
+6. The layer changes only apex/render channels, so joined Star bases and exported home geometry remain untouched.
+
+This layer sits beneath Spectrum Crown, Beat Bloom, Conversation Orbit, Cinematic Weather, Game Radar, Signal Relay, and Harmonic Aurora. Spectrum Crown gives it more visual weight; Signal Relay also injects its fine-frequency energy into the network simulation.
 
 Recommended hard bounds:
 

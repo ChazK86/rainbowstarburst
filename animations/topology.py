@@ -7,6 +7,8 @@ import math
 
 import numpy as np
 
+from audio.features import SPECTRUM_FREQUENCIES, SPECTRUM_MAX_HZ, SPECTRUM_MIN_HZ
+
 
 def _normalize_rows(values: np.ndarray) -> np.ndarray:
     lengths = np.linalg.norm(values, axis=1, keepdims=True)
@@ -48,6 +50,12 @@ class FormationTopology:
         self.parity = self._build_parity()
         self.band_influence = self._build_band_influence()
         self.pitch_influence = self._build_pitch_influence()
+        (
+            self.resonant_frequencies,
+            self.resonance_bandwidths,
+            self.resonance_weights,
+            self.resonance_variation,
+        ) = self._build_resonance_map()
         self.band_seeds = tuple(int(np.argmax(self.band_influence[:, band])) for band in range(8)) if self.count else ()
         self._distance_cache: dict[int, np.ndarray] = {}
 
@@ -120,6 +128,52 @@ class FormationTopology:
         target_angles = np.arange(12, dtype=float) / 12.0 * 2.0 * math.pi - math.pi
         delta = np.angle(np.exp(1j * (self.azimuth[:, None] - target_angles[None, :])))
         return np.exp(-0.5 * np.square(delta / 0.42))
+
+    def _build_resonance_map(self):
+        """Assign every pyramid a distinct frequency and acoustic character.
+
+        Frequencies progress over a geometry-derived spiral instead of pyramid
+        creation order.  Neighboring resonators overlap, but no two pyramids
+        have the exact same center frequency when the formation has >1 member.
+        """
+        if not self.count:
+            return (
+                np.zeros(0),
+                np.zeros(0),
+                np.empty((0, len(SPECTRUM_FREQUENCIES))),
+                np.zeros(0),
+            )
+        index = np.arange(self.count, dtype=float)
+        azimuth = np.mod((self.azimuth + math.pi) / (2.0 * math.pi), 1.0)
+        latitude = (self.latitude + 1.0) * 0.5
+        spiral_key = np.mod(azimuth + latitude * 0.61803398875, 1.0)
+        order = np.lexsort((index, latitude, spiral_key))
+        rank = np.empty(self.count, dtype=float)
+        rank[order] = np.arange(self.count, dtype=float)
+        fraction = rank / max(1.0, self.count - 1.0)
+        frequencies = SPECTRUM_MIN_HZ * np.power(
+            SPECTRUM_MAX_HZ / SPECTRUM_MIN_HZ,
+            fraction,
+        )
+        variation = np.mod(
+            np.sin((index + 1.0) * 12.9898 + self.latitude * 4.1414) * 43758.5453,
+            1.0,
+        )
+        bandwidths = 0.26 + 0.46 * variation  # octave standard deviation
+        input_frequencies = SPECTRUM_FREQUENCIES[None, :]
+        center = frequencies[:, None]
+
+        def gaussian_at(multiplier, width_scale=1.0):
+            distance = np.log2(input_frequencies / np.maximum(center * multiplier, 1e-9))
+            return np.exp(-0.5 * np.square(distance / (bandwidths[:, None] * width_scale)))
+
+        fundamental = gaussian_at(1.0)
+        second_harmonic = gaussian_at(2.0, 1.18) * (0.08 + 0.28 * variation[:, None])
+        third_harmonic = gaussian_at(3.0, 1.28) * (0.04 + 0.18 * (1.0 - variation[:, None]))
+        subharmonic = gaussian_at(0.5, 1.22) * (0.03 + 0.12 * variation[:, None])
+        weights = fundamental + second_harmonic + third_harmonic + subharmonic
+        weights /= np.maximum(weights.sum(axis=1, keepdims=True), 1e-12)
+        return frequencies, bandwidths, weights, variation
 
     def distances_from(self, seed: int) -> np.ndarray:
         seed = int(np.clip(seed, 0, max(0, self.count - 1)))

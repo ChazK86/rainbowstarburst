@@ -1,5 +1,6 @@
 import contextlib
 import io
+import math
 import tempfile
 import unittest
 
@@ -7,9 +8,15 @@ import numpy as np
 
 from animations.director import AnimationDirector, PROGRAM_NAMES
 from animations.render import apply_render_state
+from animations.resonance import OrganicResonatorBank
 from animations.signal_relay import SignalRelay
 from animations.topology import FormationTopology
-from audio.features import AudioFeatureFrame, SourceFeatures
+from audio.features import (
+    AudioFeatureFrame,
+    SPECTRUM_BIN_COUNT,
+    SPECTRUM_FREQUENCIES,
+    SourceFeatures,
+)
 from mastercontroller import MasterController
 
 
@@ -18,6 +25,7 @@ ACTIVE = SourceFeatures(
     rms=0.72,
     peak=0.91,
     bands=(0.9, 0.65, 0.35, 0.48, 0.55, 0.36, 0.82, 0.24),
+    spectrum=tuple(1.0 if index in (7, 22, 36) else 0.0 for index in range(SPECTRUM_BIN_COUNT)),
     centroid=0.53,
     flux=0.86,
     onset=True,
@@ -65,6 +73,71 @@ class TopologyAndRenderTests(unittest.TestCase):
             transformed = apply_render_state(original, director.topology, index, state)
             np.testing.assert_allclose(transformed[:3], original[:3], atol=1e-9)
             np.testing.assert_array_equal(director.topology.home_paths[index], original)
+
+    def test_every_star_pyramid_has_a_unique_normalized_resonance_identity(self):
+        topology = FormationTopology(self.controller.pyramids)
+        self.assertEqual(len(np.unique(topology.resonant_frequencies)), 80)
+        self.assertAlmostEqual(float(topology.resonant_frequencies.min()), 35.0)
+        self.assertAlmostEqual(float(topology.resonant_frequencies.max()), 16000.0)
+        np.testing.assert_allclose(topology.resonance_weights.sum(axis=1), 1.0)
+        self.assertGreater(len(np.unique(np.round(topology.resonance_bandwidths, 5))), 60)
+
+
+class OrganicResonanceTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        controller = MasterController(self.directory.name)
+        with contextlib.redirect_stdout(io.StringIO()):
+            controller.init_star_formation(subdivisions=1)
+        self.topology = FormationTopology(controller.pyramids)
+
+    def tearDown(self):
+        self.directory.cleanup()
+
+    @staticmethod
+    def spectral_frame(*frequencies):
+        spectrum = np.zeros(SPECTRUM_BIN_COUNT)
+        for frequency in frequencies:
+            index = int(np.argmin(np.abs(SPECTRUM_FREQUENCIES - frequency)))
+            spectrum[index] = 1.0
+        source = SourceFeatures(
+            active=True,
+            rms=0.8,
+            peak=0.9,
+            spectrum=tuple(spectrum),
+        )
+        return AudioFeatureFrame(1, 0.0, source, SourceFeatures.silence())
+
+    def settle(self, bank, frame, fps=60):
+        for tick in range(fps):
+            bank.update(1.0 / fps, (tick + 1) / fps, frame)
+
+    def test_single_tone_excites_a_local_minority_near_its_frequency(self):
+        bank = OrganicResonatorBank(self.topology)
+        self.settle(bank, self.spectral_frame(440.0))
+        strongest = int(np.argmax(bank.displacement))
+        resonant = float(self.topology.resonant_frequencies[strongest])
+        self.assertLess(abs(math.log2(resonant / 440.0)), 0.15)
+        above_half = int(np.count_nonzero(bank.displacement > bank.displacement.max() * 0.5))
+        self.assertLess(above_half, self.topology.count // 4)
+
+    def test_two_tones_create_separate_low_and_high_voice_clusters(self):
+        bank = OrganicResonatorBank(self.topology)
+        self.settle(bank, self.spectral_frame(110.0, 4000.0))
+        strongest = np.argsort(bank.displacement)[-16:]
+        frequencies = self.topology.resonant_frequencies[strongest]
+        self.assertTrue(np.any((frequencies > 70.0) & (frequencies < 180.0)))
+        self.assertTrue(np.any((frequencies > 2800.0) & (frequencies < 5600.0)))
+
+    def test_resonator_motion_is_equivalent_across_render_rates(self):
+        results = []
+        frame = self.spectral_frame(1000.0)
+        for fps in (30, 60, 144):
+            bank = OrganicResonatorBank(self.topology)
+            self.settle(bank, frame, fps=fps)
+            results.append(bank.displacement.copy())
+        np.testing.assert_allclose(results[0], results[1], atol=0.001)
+        np.testing.assert_allclose(results[1], results[2], atol=0.001)
 
 
 class ProgramIntegrationTests(unittest.TestCase):

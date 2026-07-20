@@ -28,8 +28,10 @@ class SignalRelay(AudioAnimation):
         feature = combine_features(frame)
         injection = np.zeros(self.topology.count, dtype=float)
         if self.topology.count:
+            spectral_drive = self.topology.resonance_weights @ np.asarray(feature.spectrum)
+            injection += np.power(np.clip(spectral_drive * 3.0, 0.0, 1.0), 1.5) * gain * 5.0
             for band, seed in enumerate(self.topology.band_seeds):
-                injection[seed] += float(feature.bands[band]) * gain * (8.0 + 8.0 * feature.flux)
+                injection[seed] += float(feature.bands[band]) * gain * (5.0 + 6.0 * feature.flux)
         if self.is_new_frame(frame) and feature.onset and self.topology.count:
             strongest = int(np.argmax(feature.bands))
             self.velocity[self.topology.band_seeds[strongest]] += 1.1 + 2.0 * feature.flux

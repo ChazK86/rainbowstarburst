@@ -71,6 +71,8 @@ The switchboard defaults produce these managed file counts:
 - Raw samples stay in bounded memory buffers and are discarded after analysis. The application does not record, transcribe, upload, or transmit audio.
 - PortAudio callbacks only copy samples. Analyzer threads publish immutable feature frames; only the pyglet render thread changes visual state.
 - System output and microphone use separate sample rates, noise floors, normalization, and analyzers. They are combined at the feature level instead of mixing unsynchronized PCM.
+- The analyzer publishes eight musical macro bands plus a 48-channel logarithmic spectrum. Every generated pyramid receives a unique center frequency from 35 Hz to 16 kHz, a distinct bandwidth, harmonic/subharmonic sensitivity, response rate, damping ratio, and phase.
+- A fixed-step resonator bank turns those acoustic identities into coupled spring motion beneath every creative program. A single tone excites a local minority of pyramids, chords create multiple clusters, and broadband sound spreads across overlapping voices.
 - Endpoint loss degrades to an unavailable status while the renderer continues. A monitor retries the selected endpoint without blocking a frame.
 - Every program returns exactly to authored home geometry after 1.5 seconds of silence. Reactive state is never written into pyramid exports.
 
