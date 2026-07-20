@@ -1,10 +1,7 @@
 #!/usr/bin/env python3
-"""Rainbow Starburst desktop console and live OpenGL visualization.
+"""Rainbow Starburst switchboard and live audio-reactive OpenGL stage."""
 
-The interface deliberately joins a tactile mid-century switchboard with a
-restrained modern mixing desk.  The companion viewport renders the selected
-pyramid formation, the animated rainbow trace, and interactive particle bursts.
-"""
+from __future__ import annotations
 
 import colorsys
 import math
@@ -15,12 +12,39 @@ import numpy as np
 import pyglet
 from pyglet import shapes
 from pyglet.window import key, mouse
+from OpenGL.GL import (
+    GL_BLEND,
+    GL_COLOR_BUFFER_BIT,
+    GL_CULL_FACE,
+    GL_DEPTH_BUFFER_BIT,
+    GL_DEPTH_TEST,
+    GL_LINES,
+    GL_LINE_STRIP,
+    GL_MODELVIEW,
+    GL_ONE_MINUS_SRC_ALPHA,
+    GL_POINTS,
+    GL_PROJECTION,
+    GL_SRC_ALPHA,
+    glBegin,
+    glBlendFunc,
+    glClear,
+    glClearColor,
+    glColor4f,
+    glDisable,
+    glEnable,
+    glEnd,
+    glLineWidth,
+    glLoadIdentity,
+    glMatrixMode,
+    glPointSize,
+    glRotatef,
+    glVertex3f,
+    glViewport,
+)
+from OpenGL.GLU import gluLookAt, gluPerspective
 
-# PyOpenGL provides the compatibility-profile matrix and immediate-mode calls
-# used by the original renderer.
-from OpenGL.GL import *
-from OpenGL.GLU import *
-
+from animations import AnimationDirector, PROGRAM_NAMES, apply_render_state
+from audio import AudioEngine, AudioSourceMode
 from mastercontroller import (
     ANIMATION_PULSE,
     ANIMATION_SPIN,
@@ -32,16 +56,17 @@ from mastercontroller import (
     PARTICLE_OFF,
     MasterController,
 )
+from settings import load_settings, save_settings
 
 
 PALETTE = {
-    "ink": (13, 18, 23),
-    "panel": (27, 33, 38),
-    "panel_raised": (39, 46, 52),
+    "ink": (11, 16, 21),
+    "panel": (25, 31, 36),
+    "panel_raised": (38, 45, 51),
     "panel_hover": (51, 61, 68),
-    "line": (76, 85, 91),
+    "line": (75, 85, 91),
     "cream": (240, 229, 199),
-    "muted": (163, 167, 156),
+    "muted": (157, 163, 155),
     "brass": (202, 164, 91),
     "amber": (255, 180, 73),
     "teal": (68, 202, 190),
@@ -50,6 +75,7 @@ PALETTE = {
 }
 
 ARRANGEMENTS = ("Edge2Edge", "SpikeSphere", "Grid", "Star", "Globe")
+SOURCE_LABELS = ("OFF", "SYSTEM", "MIC", "BOTH", "DEMO")
 PARTICLE_MODES = (PARTICLE_OFF, PARTICLE_LOW, PARTICLE_MEDIUM, PARTICLE_HEAVY)
 ANIMATION_LABELS = ("WAVE", "SPIN", "PULSE", "NONE")
 ANIMATION_VALUES = {
@@ -59,24 +85,16 @@ ANIMATION_VALUES = {
     "NONE": "",
 }
 
+mc = MasterController()
+audio_engine = AudioEngine()
+director = AnimationDirector()
+preferences = load_settings()
 
 ui_window = None
 visualization_window = None
-mc = MasterController()
-
 knob_wave_value = 0.8
-knob_subdiv_value = 1.0
+knob_detail_value = 1.0
 turntable_angle = 0.0
-
-ui_batch = None
-toggle_buttons = []
-particle_buttons = []
-animation_buttons = []
-dial_knob_wave = None
-dial_knob_subdiv = None
-turntable = None
-speaker_rect = None
-led_lamp = None
 
 
 def _rgba(rgb, alpha=255):
@@ -84,75 +102,58 @@ def _rgba(rgb, alpha=255):
 
 
 def _rainbow_color(fraction, saturation=0.86, value=1.0):
-    """Return a smooth RGB rainbow color for a normalized fraction."""
-    hue = (fraction * 0.92) % 1.0
-    return colorsys.hsv_to_rgb(hue, saturation, value)
+    return colorsys.hsv_to_rgb(float(fraction) % 1.0, saturation, value)
+
+
+def _short_name(value, limit=30):
+    text = str(value)
+    return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
 class ToggleButton:
-    """Tactile switch with active and hover states."""
+    """A compact, keyboard-like switch with one clear active state."""
 
-    def __init__(
-        self,
-        x,
-        y,
-        width,
-        height,
-        text,
-        on_press,
-        batch,
-        accent=None,
-    ):
-        self.x = x
-        self.y = y
-        self.w = width
-        self.h = height
-        self.label = text
-        self.on_press_callback = on_press
+    def __init__(self, x, y, width, height, text, on_press, batch, accent=None):
+        self.x, self.y, self.width, self.height = x, y, width, height
+        self.on_press = on_press
         self.accent = accent or PALETTE["amber"]
         self.active = False
         self.hovered = False
-
-        self.border = shapes.Rectangle(
-            x - 2, y - 2, width + 4, height + 4,
-            color=PALETTE["line"], batch=batch,
-        )
-        self.rect = shapes.Rectangle(
-            x, y, width, height,
-            color=PALETTE["panel_raised"], batch=batch,
-        )
-        self.signal = shapes.Rectangle(
-            x + 10, y + 6, max(4, width - 20), 3,
-            color=PALETTE["line"], batch=batch,
-        )
+        self.border = shapes.Rectangle(x - 1, y - 1, width + 2, height + 2, color=PALETTE["line"], batch=batch)
+        self.rect = shapes.Rectangle(x, y, width, height, color=PALETTE["panel_raised"], batch=batch)
+        self.signal = shapes.Rectangle(x, y, 3, height, color=PALETTE["line"], batch=batch)
         self.txt = pyglet.text.Label(
             text,
-            x=x + width // 2,
-            y=y + height // 2 + 3,
+            x=x + width / 2,
+            y=y + height / 2,
             anchor_x="center",
             anchor_y="center",
             font_name="Segoe UI",
-            font_size=10,
+            font_size=8,
             color=_rgba(PALETTE["cream"]),
             batch=batch,
         )
 
-    def hit_test(self, mx, my):
-        return self.x <= mx <= self.x + self.w and self.y <= my <= self.y + self.h
+    def hit_test(self, x, y):
+        return self.x <= x <= self.x + self.width and self.y <= y <= self.y + self.height
 
     def set_active(self, active):
         self.active = bool(active)
         self._refresh()
 
-    def on_mouse_motion(self, mx, my):
-        hovered = self.hit_test(mx, my)
+    def set_text(self, value):
+        self.txt.text = str(value)
+
+    def on_mouse_motion(self, x, y):
+        hovered = self.hit_test(x, y)
         if hovered != self.hovered:
             self.hovered = hovered
             self._refresh()
 
-    def on_mouse_press(self, mx, my, button, modifiers):
-        if button == mouse.LEFT and self.hit_test(mx, my):
-            self.on_press_callback()
+    def on_mouse_press(self, x, y, button, modifiers):
+        del modifiers
+        if button == mouse.LEFT and self.hit_test(x, y):
+            self.on_press()
             return True
         return False
 
@@ -170,80 +171,47 @@ class ToggleButton:
 
 
 class Knob:
-    """Rotary control with a bounded value and a readable live value."""
+    """Bounded rotary parameter with a live numeric readout."""
 
-    def __init__(
-        self,
-        x,
-        y,
-        radius,
-        label,
-        batch,
-        on_drag,
-        minimum=0.0,
-        maximum=1.0,
-        value=0.5,
-        step=None,
-        value_format="{:.1f}",
-    ):
-        self.x = x
-        self.y = y
-        self.r = radius
-        self.minimum = float(minimum)
-        self.maximum = float(maximum)
-        self.step = step
-        self.value_format = value_format
+    def __init__(self, x, y, radius, label, batch, on_drag, minimum, maximum, value, step, value_format):
+        self.x, self.y, self.r = x, y, radius
+        self.minimum, self.maximum = float(minimum), float(maximum)
+        self.on_drag, self.step, self.value_format = on_drag, step, value_format
         self.value = float(value)
-        self.on_drag = on_drag
         self.dragging = False
-
-        self.halo = shapes.Circle(x, y, radius + 5, color=PALETTE["line"], batch=batch)
+        self.halo = shapes.Circle(x, y, radius + 4, color=PALETTE["line"], batch=batch)
         self.bg = shapes.Circle(x, y, radius, color=PALETTE["panel_raised"], batch=batch)
-        self.cap = shapes.Circle(x, y, max(7, radius - 13), color=PALETTE["panel"], batch=batch)
-        self.indicator = shapes.Line(
-            x, y, x, y + radius - 7,
-            thickness=4, color=PALETTE["amber"], batch=batch,
+        self.cap = shapes.Circle(x, y, max(7, radius - 12), color=PALETTE["panel"], batch=batch)
+        self.indicator = shapes.Line(x, y, x, y + radius - 7, thickness=3, color=PALETTE["amber"], batch=batch)
+        self.label = pyglet.text.Label(
+            label.upper(), x=x, y=y + radius + 18, anchor_x="center", anchor_y="center",
+            font_name="Segoe UI", font_size=8, color=_rgba(PALETTE["muted"]), batch=batch,
         )
-        self.lbl = pyglet.text.Label(
-            label.upper(),
-            x=x,
-            y=y + radius + 24,
-            anchor_x="center",
-            anchor_y="center",
-            font_name="Segoe UI",
-            font_size=9,
-            color=_rgba(PALETTE["muted"]),
-            batch=batch,
-        )
-        self.value_lbl = pyglet.text.Label(
-            "",
-            x=x,
-            y=y - radius - 19,
-            anchor_x="center",
-            anchor_y="center",
-            font_name="Consolas",
-            font_size=10,
-            color=_rgba(PALETTE["cream"]),
-            batch=batch,
+        self.value_label = pyglet.text.Label(
+            "", x=x, y=y - radius - 16, anchor_x="center", anchor_y="center",
+            font_name="Consolas", font_size=9, color=_rgba(PALETTE["cream"]), batch=batch,
         )
         self.set_value(value, notify=False)
 
-    def hit_test(self, mx, my):
-        return math.hypot(mx - self.x, my - self.y) <= self.r + 5
+    def hit_test(self, x, y):
+        return math.hypot(x - self.x, y - self.y) <= self.r + 5
 
-    def on_mouse_press(self, mx, my, button, modifiers):
-        if button == mouse.LEFT and self.hit_test(mx, my):
+    def on_mouse_press(self, x, y, button, modifiers):
+        del modifiers
+        if button == mouse.LEFT and self.hit_test(x, y):
             self.dragging = True
-            self._set_from_pointer(mx, my)
+            self._set_from_pointer(x, y)
             return True
         return False
 
-    def on_mouse_drag(self, mx, my, dx, dy, buttons, modifiers):
-        if self.dragging and (buttons & mouse.LEFT):
-            self._set_from_pointer(mx, my)
+    def on_mouse_drag(self, x, y, dx, dy, buttons, modifiers):
+        del dx, dy, modifiers
+        if self.dragging and buttons & mouse.LEFT:
+            self._set_from_pointer(x, y)
 
-    def on_mouse_release(self, mx, my, button, modifiers):
-        if self.dragging and button == mouse.LEFT:
+    def on_mouse_release(self, x, y, button, modifiers):
+        del x, y, modifiers
+        if button == mouse.LEFT:
             self.dragging = False
 
     def set_value(self, value, notify=True):
@@ -251,379 +219,241 @@ class Knob:
         if self.step:
             value = round(value / self.step) * self.step
         self.value = value
-        fraction = 0.0 if self.maximum == self.minimum else (
-            (value - self.minimum) / (self.maximum - self.minimum)
-        )
+        fraction = (value - self.minimum) / max(1e-9, self.maximum - self.minimum)
         angle = math.radians(225.0 + fraction * 270.0)
-        length = self.r - 8
+        length = self.r - 7
         self.indicator.x2 = self.x + math.cos(angle) * length
         self.indicator.y2 = self.y + math.sin(angle) * length
-        self.value_lbl.text = self.value_format.format(value)
+        self.value_label.text = self.value_format.format(value)
         if notify:
             self.on_drag(value)
 
-    def _set_from_pointer(self, mx, my):
-        angle = math.degrees(math.atan2(my - self.y, mx - self.x)) % 360.0
+    def _set_from_pointer(self, x, y):
+        angle = math.degrees(math.atan2(y - self.y, x - self.x)) % 360.0
         relative = (angle - 225.0) % 360.0
         if relative > 270.0:
-            # The unused 90-degree arc is the knob's hard stop.  Snap to the
-            # nearest endpoint so dragging through it remains predictable.
             relative = 0.0 if relative > 315.0 else 270.0
-        fraction = relative / 270.0
-        self.set_value(self.minimum + fraction * (self.maximum - self.minimum))
+        self.set_value(self.minimum + relative / 270.0 * (self.maximum - self.minimum))
 
 
 class Turntable:
-    """Large tactile disc controlling the globe apex offset."""
-
-    def __init__(self, x, y, radius, label, on_spin, batch):
-        self.x = x
-        self.y = y
-        self.r = radius
-        self.angle = 0.0
-        self.dragging = False
+    def __init__(self, x, y, radius, label, batch, on_spin):
+        self.x, self.y, self.r = x, y, radius
         self.on_spin = on_spin
-
-        self.outer = shapes.Circle(x, y, radius + 6, color=PALETTE["brass"], batch=batch)
+        self.dragging = False
+        self.angle = 0.0
+        self.outer = shapes.Circle(x, y, radius + 5, color=PALETTE["brass"], batch=batch)
         self.bg = shapes.Circle(x, y, radius, color=(28, 37, 47), batch=batch)
-        self.groove_a = shapes.Circle(x, y, radius - 10, color=(40, 50, 61), batch=batch)
-        self.groove_b = shapes.Circle(x, y, radius - 17, color=(23, 30, 38), batch=batch)
-        self.hub = shapes.Circle(x, y, 8, color=PALETTE["cream"], batch=batch)
-        self.indicator = shapes.Line(
-            x, y, x + radius - 12, y,
-            thickness=3, color=PALETTE["amber"], batch=batch,
+        self.groove = shapes.Circle(x, y, radius - 10, color=(19, 26, 32), batch=batch)
+        self.hub = shapes.Circle(x, y, 7, color=PALETTE["cream"], batch=batch)
+        self.indicator = shapes.Line(x, y, x + radius - 10, y, thickness=3, color=PALETTE["amber"], batch=batch)
+        self.label = pyglet.text.Label(
+            label.upper(), x=x, y=y + radius + 18, anchor_x="center", anchor_y="center",
+            font_name="Segoe UI", font_size=8, color=_rgba(PALETTE["muted"]), batch=batch,
         )
-        self.lbl = pyglet.text.Label(
-            label.upper(),
-            x=x,
-            y=y + radius + 25,
-            anchor_x="center",
-            anchor_y="center",
-            font_name="Segoe UI",
-            font_size=9,
-            color=_rgba(PALETTE["muted"]),
-            batch=batch,
-        )
-        self.value_lbl = pyglet.text.Label(
-            "000°",
-            x=x,
-            y=y - radius - 19,
-            anchor_x="center",
-            anchor_y="center",
-            font_name="Consolas",
-            font_size=10,
-            color=_rgba(PALETTE["cream"]),
-            batch=batch,
+        self.value_label = pyglet.text.Label(
+            "000°", x=x, y=y - radius - 16, anchor_x="center", anchor_y="center",
+            font_name="Consolas", font_size=9, color=_rgba(PALETTE["cream"]), batch=batch,
         )
 
-    def hit_test(self, mx, my):
-        return math.hypot(mx - self.x, my - self.y) <= self.r + 6
+    def hit_test(self, x, y):
+        return math.hypot(x - self.x, y - self.y) <= self.r + 5
 
-    def on_mouse_press(self, mx, my, button, modifiers):
-        if button == mouse.LEFT and self.hit_test(mx, my):
+    def on_mouse_press(self, x, y, button, modifiers):
+        del modifiers
+        if button == mouse.LEFT and self.hit_test(x, y):
             self.dragging = True
-            self._set_from_pointer(mx, my)
+            self._set(x, y)
             return True
         return False
 
-    def on_mouse_drag(self, mx, my, dx, dy, buttons, modifiers):
-        if self.dragging and (buttons & mouse.LEFT):
-            self._set_from_pointer(mx, my)
+    def on_mouse_drag(self, x, y, dx, dy, buttons, modifiers):
+        del dx, dy, modifiers
+        if self.dragging and buttons & mouse.LEFT:
+            self._set(x, y)
 
-    def on_mouse_release(self, mx, my, button, modifiers):
-        if self.dragging and button == mouse.LEFT:
+    def on_mouse_release(self, x, y, button, modifiers):
+        del x, y, modifiers
+        if button == mouse.LEFT:
             self.dragging = False
 
-    def _set_from_pointer(self, mx, my):
-        self.angle = math.degrees(math.atan2(my - self.y, mx - self.x)) % 360.0
+    def _set(self, x, y):
+        self.angle = math.degrees(math.atan2(y - self.y, x - self.x)) % 360.0
         radians = math.radians(self.angle)
-        length = self.r - 12
+        length = self.r - 10
         self.indicator.x2 = self.x + math.cos(radians) * length
         self.indicator.y2 = self.y + math.sin(radians) * length
-        self.value_lbl.text = f"{int(round(self.angle)) % 360:03d}°"
+        self.value_label.text = f"{int(round(self.angle)) % 360:03d}°"
         self.on_spin(self.angle)
 
 
 class SwitchboardWindow(pyglet.window.Window):
-    """Primary working surface for arrangements, signals, and motion."""
+    """A restrained studio console around one dominant live visual canvas."""
 
-    def __init__(self, width=760, height=620, title="Rainbow Starburst — Switchboard"):
+    def __init__(self, width=840, height=760, title="Rainbow Starburst — Switchboard"):
         super().__init__(width, height, title, resizable=False, vsync=True)
-
-        global ui_batch, speaker_rect, led_lamp
-        global dial_knob_wave, dial_knob_subdiv, turntable
-
-        ui_batch = pyglet.graphics.Batch()
-        toggle_buttons.clear()
-        particle_buttons.clear()
-        animation_buttons.clear()
-
+        self.batch = pyglet.graphics.Batch()
+        self.labels = []
+        self.controls = []
+        self.formation_buttons = []
+        self.source_buttons = []
+        self.program_buttons = []
+        self.motion_buttons = []
+        self.particle_buttons = []
         self.active_arrangement = "Star"
-        self.active_particle = PARTICLE_OFF
+        self.active_source = "OFF"  # Never auto-open a saved microphone.
+        self.active_program = preferences.audio_program if preferences.audio_program in PROGRAM_NAMES else "CINEMA"
         self.active_animation = "WAVE"
-        self.status_expires = 0.0
-        self.static_labels = []
-        self.decoration_shapes = []
+        self.active_particle = PARTICLE_OFF
+        self.system_devices, self.microphone_devices = audio_engine.devices()
 
-        self.background = shapes.Rectangle(
-            0, 0, width, height, color=PALETTE["ink"], batch=ui_batch,
-        )
-        self.faceplate = shapes.Rectangle(
-            20, 18, width - 40, height - 36,
-            color=PALETTE["panel"], batch=ui_batch,
-        )
-        self.header_rule = shapes.Rectangle(
-            40, height - 98, width - 80, 2,
-            color=PALETTE["brass"], batch=ui_batch,
-        )
+        shapes.Rectangle(0, 0, width, height, color=PALETTE["ink"], batch=self.batch)
+        shapes.Rectangle(20, 18, width - 40, height - 36, color=PALETTE["panel"], batch=self.batch)
+        shapes.Rectangle(40, 668, width - 80, 2, color=PALETTE["brass"], batch=self.batch)
+        self._label("RAINBOW / STARBURST", 40, 716, 22, PALETTE["cream"], anchor_y="center")
+        self._label("PYRAMID SIGNAL CONSOLE  •  RS–02", 42, 690, 9, PALETTE["muted"], anchor_y="center")
+        self.live_dot = shapes.Circle(width - 142, 704, 6, color=PALETTE["line"], batch=self.batch)
+        self.live_label = self._label("AUDIO OFF", width - 126, 704, 9, PALETTE["muted"], anchor_y="center")
 
-        self._label(
-            "RAINBOW / STARBURST", 40, height - 48,
-            22, PALETTE["cream"], anchor_y="center",
-        )
-        self._label(
-            "PYRAMID SIGNAL CONSOLE  •  RS–01", 42, height - 76,
-            9, PALETTE["muted"], anchor_y="center",
-        )
-        self.live_dot = shapes.Circle(
-            width - 138, height - 57, 6,
-            color=PALETTE["teal"], batch=ui_batch,
-        )
-        self._label(
-            "SYSTEM LIVE", width - 122, height - 57,
-            9, PALETTE["teal"], anchor_y="center",
-        )
+        self._section("01  FORMATION ROUTING", 40, 644)
+        self._button_row(ARRANGEMENTS, 40, 590, 144, 8, self.formation_buttons, self.on_arrangement, PALETTE["amber"])
+        self._section("02  LOCAL AUDIO SOURCE", 40, 560)
+        self._button_row(SOURCE_LABELS, 40, 506, 144, 8, self.source_buttons, self.on_source, PALETTE["teal"])
+        self._section("03  AUDIO-REACTIVE PROGRAM", 40, 476)
+        self._button_row(PROGRAM_NAMES, 40, 422, 100, 8, self.program_buttons, self.on_program, PALETTE["blue"])
 
-        self._section_label("01  FORMATION ROUTING", 40, height - 132)
-        button_width = 120
-        gap = 14
-        x_start = 40
-        y_arrangements = height - 195
-        for index, label in enumerate(ARRANGEMENTS):
-            button = ToggleButton(
-                x=x_start + index * (button_width + gap),
-                y=y_arrangements,
-                width=button_width,
-                height=42,
-                text=label.upper(),
-                on_press=lambda value=label: self.on_arrangement_pressed(value),
-                batch=ui_batch,
-                accent=PALETTE["amber"],
-            )
-            toggle_buttons.append(button)
+        self._section("04  MANUAL MOTION", 40, 391)
+        self._button_row(ANIMATION_LABELS, 40, 338, 80, 8, self.motion_buttons, self.on_manual_motion, PALETTE["amber"])
+        self._section("05  PARTICLE LIMIT", 446, 391)
+        self._button_row(PARTICLE_MODES, 446, 338, 74, 8, self.particle_buttons, self.on_particle, PALETTE["teal"])
 
-        self._section_label("02  PARTICLE GAIN", 40, height - 240)
-        self._section_label("03  MOTION PROGRAM", 392, height - 240)
-        compact_width = 72
-        compact_gap = 10
-        y_modes = height - 302
-        for index, mode in enumerate(PARTICLE_MODES):
-            button = ToggleButton(
-                x=40 + index * (compact_width + compact_gap),
-                y=y_modes,
-                width=compact_width,
-                height=40,
-                text=mode,
-                on_press=lambda value=mode: self.on_particle_mode_pressed(value),
-                batch=ui_batch,
-                accent=PALETTE["teal"],
-            )
-            particle_buttons.append(button)
+        shapes.Rectangle(40, 306, width - 80, 1, color=PALETTE["line"], batch=self.batch)
+        self._section("06  RESPONSE + DEVICE STATUS", 40, 284)
+        self.sensitivity_knob = Knob(
+            94, 191, 36, "Sensitivity", self.batch, self.on_sensitivity,
+            0.5, 2.0, preferences.sensitivity, 0.05, "{:.2f}",
+        )
+        self.reactivity_knob = Knob(
+            214, 191, 36, "Reactivity", self.batch, self.on_reactivity,
+            0.55, 1.6, preferences.reactivity, 0.05, "{:.2f}",
+        )
+        self.detail_knob = Knob(
+            334, 191, 36, "Globe detail", self.batch, self.on_detail,
+            0, MAX_GLOBE_SUBDIVISIONS, knob_detail_value, 1, "{:.0f}",
+        )
+        self.apex_turntable = Turntable(460, 188, 45, "Apex offset", self.batch, self.on_apex)
+        self.controls.extend((self.sensitivity_knob, self.reactivity_knob, self.detail_knob, self.apex_turntable))
 
-        for index, label in enumerate(ANIMATION_LABELS):
-            button = ToggleButton(
-                x=392 + index * (compact_width + compact_gap),
-                y=y_modes,
-                width=compact_width,
-                height=40,
-                text=label,
-                on_press=lambda value=label: self.on_animation_pressed(value),
-                batch=ui_batch,
-                accent=PALETTE["red"] if label == "SPIN" else PALETTE["blue"],
-            )
-            animation_buttons.append(button)
+        self.system_name = self._label("SYSTEM  —", 548, 250, 8, PALETTE["muted"])
+        self.system_meter_bg = shapes.Rectangle(548, 230, 244, 5, color=(48, 56, 61), batch=self.batch)
+        self.system_meter = shapes.Rectangle(548, 230, 0, 5, color=PALETTE["teal"], batch=self.batch)
+        self.mic_name = self._label("MIC     —", 548, 208, 8, PALETTE["muted"])
+        self.mic_meter_bg = shapes.Rectangle(548, 188, 244, 5, color=(48, 56, 61), batch=self.batch)
+        self.mic_meter = shapes.Rectangle(548, 188, 0, 5, color=PALETTE["amber"], batch=self.batch)
+        self.telemetry = self._label("0.0 MS  •  0 DROPPED", 548, 164, 8, PALETTE["muted"])
+        self.privacy = self._label("LIVE ANALYSIS — NOT RECORDING", 548, 143, 8, PALETTE["brass"])
+        self.system_device_button = ToggleButton(548, 94, 118, 32, "NEXT SYSTEM", self.cycle_system_device, self.batch, PALETTE["teal"])
+        self.mic_device_button = ToggleButton(674, 94, 118, 32, "NEXT MIC", self.cycle_microphone_device, self.batch, PALETTE["amber"])
+        self.reduced_button = ToggleButton(548, 54, 244, 30, "REDUCED MOTION", self.toggle_reduced_motion, self.batch, PALETTE["blue"])
+        self.controls.extend((self.system_device_button, self.mic_device_button, self.reduced_button))
 
-        self.deck_rule = shapes.Rectangle(
-            40, 244, width - 80, 1, color=PALETTE["line"], batch=ui_batch,
+        self.status_label = self._label("", 40, 34, 8, PALETTE["muted"], anchor_y="center")
+        self.help_label = self._label(
+            "1–5 FORMATIONS  •  SPACE PAUSES VIEW", width - 40, 34, 8, PALETTE["muted"],
+            anchor_x="right", anchor_y="center",
         )
-        self._section_label("04  CONTROL DECK", 40, 226)
+        self._sync_buttons()
+        self._update_device_names()
+        self.reduced_button.set_active(bool(preferences.reduced_motion))
+        director.sensitivity = float(preferences.sensitivity)
+        director.reactivity = float(preferences.reactivity)
+        director.reduced_motion = bool(preferences.reduced_motion)
+        self.set_status("STAR ROUTED  •  MANUAL WAVE ACTIVE")
+        pyglet.clock.schedule_interval(self.update_audio_status, 0.1)
 
-        dial_knob_wave = Knob(
-            x=105,
-            y=128,
-            radius=42,
-            label="Wave amplitude",
-            batch=ui_batch,
-            on_drag=self.on_knob_wave_drag,
-            minimum=0.0,
-            maximum=2.0,
-            value=knob_wave_value,
-            step=0.05,
-            value_format="{:.2f}",
-        )
-        dial_knob_subdiv = Knob(
-            x=246,
-            y=128,
-            radius=42,
-            label="Globe detail",
-            batch=ui_batch,
-            on_drag=self.on_knob_subdiv_drag,
-            minimum=0.0,
-            maximum=float(MAX_GLOBE_SUBDIVISIONS),
-            value=knob_subdiv_value,
-            step=1.0,
-            value_format="{:.0f}",
-        )
-        turntable = Turntable(
-            x=408,
-            y=126,
-            radius=54,
-            label="Apex offset",
-            on_spin=self.on_turntable_spin,
-            batch=ui_batch,
-        )
-
-        speaker_rect = shapes.Rectangle(
-            514, 69, 198, 112, color=(20, 25, 29), batch=ui_batch,
-        )
-        self.speaker_border = shapes.Rectangle(
-            510, 65, 206, 120, color=PALETTE["line"], batch=ui_batch,
-        )
-        # Re-create the inner rectangle after the border so it stays visually inset.
-        speaker_rect = shapes.Rectangle(
-            514, 69, 198, 112, color=(20, 25, 29), batch=ui_batch,
-        )
-        for index in range(10):
-            self.decoration_shapes.append(shapes.Rectangle(
-                526,
-                81 + index * 9,
-                174,
-                2,
-                color=(54, 62, 66),
-                batch=ui_batch,
-            ))
-        self._label(
-            "SIGNAL MONITOR", 613, 198,
-            9, PALETTE["muted"], anchor_x="center", anchor_y="center",
-        )
-        self.led_halo = shapes.Circle(
-            613, 211, 10, color=(54, 62, 66), batch=ui_batch,
-        )
-        led_lamp = shapes.Circle(
-            613, 211, 5, color=PALETTE["teal"], batch=ui_batch,
-        )
-
-        self.status_label = pyglet.text.Label(
-            "",
-            x=40,
-            y=36,
-            anchor_x="left",
-            anchor_y="center",
-            font_name="Consolas",
-            font_size=9,
-            color=_rgba(PALETTE["muted"]),
-            batch=ui_batch,
-        )
-        self.help_label = pyglet.text.Label(
-            "1–5 FORMATIONS  •  CLICK VIEWPORT FOR BURSTS",
-            x=width - 40,
-            y=36,
-            anchor_x="right",
-            anchor_y="center",
-            font_name="Segoe UI",
-            font_size=8,
-            color=_rgba(PALETTE["muted"]),
-            batch=ui_batch,
-        )
-
-        self._sync_active_states()
-        self.set_status("STAR FORMATION ROUTED  •  WAVE PROGRAM ACTIVE")
-
-    def _label(
-        self,
-        text,
-        x,
-        y,
-        font_size,
-        color,
-        anchor_x="left",
-        anchor_y="baseline",
-    ):
+    def _label(self, text, x, y, size, color, anchor_x="left", anchor_y="baseline"):
         label = pyglet.text.Label(
-            text,
-            x=x,
-            y=y,
-            anchor_x=anchor_x,
-            anchor_y=anchor_y,
-            font_name="Segoe UI",
-            font_size=font_size,
-            color=_rgba(color),
-            batch=ui_batch,
+            text, x=x, y=y, anchor_x=anchor_x, anchor_y=anchor_y,
+            font_name="Segoe UI", font_size=size, color=_rgba(color), batch=self.batch,
         )
-        self.static_labels.append(label)
+        self.labels.append(label)
         return label
 
-    def _section_label(self, text, x, y):
+    def _section(self, text, x, y):
         return self._label(text, x, y, 9, PALETTE["brass"])
 
-    def _sync_active_states(self):
-        for button, value in zip(toggle_buttons, ARRANGEMENTS):
-            button.set_active(value == self.active_arrangement)
-        for button, value in zip(particle_buttons, PARTICLE_MODES):
-            button.set_active(value == self.active_particle)
-        for button, value in zip(animation_buttons, ANIMATION_LABELS):
-            button.set_active(value == self.active_animation)
+    def _button_row(self, values, x, y, width, gap, collection, callback, accent):
+        for index, value in enumerate(values):
+            button = ToggleButton(
+                x + index * (width + gap), y, width, 38, str(value),
+                lambda selected=value: callback(selected), self.batch, accent,
+            )
+            collection.append(button)
+            self.controls.append(button)
 
-    def set_status(self, message, duration=4.0):
-        self.status_label.text = message
-        self.status_expires = time.time() + duration
+    def _sync_buttons(self):
+        for button, value in zip(self.formation_buttons, ARRANGEMENTS):
+            button.set_active(value == self.active_arrangement)
+        for button, value in zip(self.source_buttons, SOURCE_LABELS):
+            button.set_active(value == self.active_source)
+        for button, value in zip(self.program_buttons, PROGRAM_NAMES):
+            button.set_active(value == self.active_program)
+        for button, value in zip(self.motion_buttons, ANIMATION_LABELS):
+            button.set_active(value == self.active_animation)
+        for button, value in zip(self.particle_buttons, PARTICLE_MODES):
+            button.set_active(value == self.active_particle)
+
+    def _save(self):
+        preferences.audio_source = self.active_source
+        preferences.audio_program = self.active_program
+        preferences.system_device_id = audio_engine.system_device_id
+        preferences.microphone_device_id = audio_engine.microphone_device_id
+        preferences.sensitivity = director.sensitivity
+        preferences.reactivity = director.reactivity
+        preferences.reduced_motion = director.reduced_motion
+        try:
+            save_settings(preferences)
+        except OSError:
+            pass
+
+    def set_status(self, message):
+        self.status_label.text = str(message)
 
     def on_draw(self):
         glClearColor(*(channel / 255.0 for channel in PALETTE["ink"]), 1.0)
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
-        ui_batch.draw()
+        self.batch.draw()
 
     def on_mouse_motion(self, x, y, dx, dy):
-        for button in toggle_buttons + particle_buttons + animation_buttons:
-            button.on_mouse_motion(x, y)
+        del dx, dy
+        for control in self.controls:
+            if isinstance(control, ToggleButton):
+                control.on_mouse_motion(x, y)
 
     def on_mouse_press(self, x, y, button, modifiers):
-        for control in toggle_buttons + particle_buttons + animation_buttons:
+        for control in self.controls:
             if control.on_mouse_press(x, y, button, modifiers):
                 return
-        if dial_knob_wave.on_mouse_press(x, y, button, modifiers):
-            return
-        if dial_knob_subdiv.on_mouse_press(x, y, button, modifiers):
-            return
-        turntable.on_mouse_press(x, y, button, modifiers)
 
     def on_mouse_drag(self, x, y, dx, dy, buttons, modifiers):
-        dial_knob_wave.on_mouse_drag(x, y, dx, dy, buttons, modifiers)
-        dial_knob_subdiv.on_mouse_drag(x, y, dx, dy, buttons, modifiers)
-        turntable.on_mouse_drag(x, y, dx, dy, buttons, modifiers)
+        for control in self.controls:
+            if isinstance(control, (Knob, Turntable)):
+                control.on_mouse_drag(x, y, dx, dy, buttons, modifiers)
 
     def on_mouse_release(self, x, y, button, modifiers):
-        dial_knob_wave.on_mouse_release(x, y, button, modifiers)
-        dial_knob_subdiv.on_mouse_release(x, y, button, modifiers)
-        turntable.on_mouse_release(x, y, button, modifiers)
+        for control in self.controls:
+            if isinstance(control, (Knob, Turntable)):
+                control.on_mouse_release(x, y, button, modifiers)
 
     def on_key_press(self, symbol, modifiers):
-        arrangement_keys = {
-            key._1: "Edge2Edge",
-            key._2: "SpikeSphere",
-            key._3: "Grid",
-            key._4: "Star",
-            key._5: "Globe",
-        }
-        if symbol in arrangement_keys:
-            self.on_arrangement_pressed(arrangement_keys[symbol])
+        del modifiers
+        formations = {key._1: "Edge2Edge", key._2: "SpikeSphere", key._3: "Grid", key._4: "Star", key._5: "Globe"}
+        if symbol in formations:
+            self.on_arrangement(formations[symbol])
         elif symbol == key.ESCAPE:
-            pyglet.app.exit()
+            self._shutdown()
 
-    def on_close(self):
-        pyglet.app.exit()
-
-    def on_arrangement_pressed(self, label):
+    def on_arrangement(self, label):
         if label == "Edge2Edge":
             mc.init_edge_to_edge_pyramids(count=7)
         elif label == "SpikeSphere":
@@ -633,48 +463,103 @@ class SwitchboardWindow(pyglet.window.Window):
         elif label == "Star":
             mc.init_star_formation(subdivisions=1, core_radius=3.0, spike_height=2.4)
         elif label == "Globe":
-            subdivisions = int(round(knob_subdiv_value))
+            detail = int(round(self.detail_knob.value))
             offset = 0.18 + (turntable_angle % 360.0) / 360.0 * 0.7
-            mc.init_globe_icosahedron(
-                subdivisions=subdivisions,
-                apex_offset=offset,
-                base_scale=4.0,
-            )
-
+            mc.init_globe_icosahedron(subdivisions=detail, apex_offset=offset, base_scale=4.0)
         self.active_arrangement = label
-        mc.set_animation_mode(ANIMATION_VALUES[self.active_animation])
-        self._apply_wave_value()
-        self._sync_active_states()
+        if self.active_source == "OFF":
+            mc.set_animation_mode(ANIMATION_VALUES[self.active_animation])
+            self._apply_wave()
+        else:
+            mc.set_animation_mode("")
+        director.set_formation(mc.pyramids)
+        self._sync_buttons()
         self.set_status(f"{label.upper()} ROUTED  •  {len(mc.pyramids)} PYRAMIDS")
-        if visualization_window is not None:
+        if visualization_window:
             visualization_window.set_scene(label)
 
-    def on_particle_mode_pressed(self, mode):
-        self.active_particle = mode
-        mc.set_particle_mode(mode)
-        self._sync_active_states()
-        message = "PARTICLE GAIN MUTED" if mode == PARTICLE_OFF else (
-            f"PARTICLE GAIN {mode}  •  CLICK THE 3D VIEWPORT TO BURST"
-        )
-        self.set_status(message)
+    def on_source(self, label):
+        self.active_source = label
+        if label == "OFF":
+            audio_engine.configure(AudioSourceMode.OFF)
+            director.select(None)
+            self.live_dot.color = PALETTE["line"]
+            self.live_label.text = "AUDIO OFF"
+            self.live_label.color = _rgba(PALETTE["muted"])
+            self.set_status("AUDIO ANALYSIS OFF  •  HOME GEOMETRY RESTORED")
+        else:
+            mc.set_animation_mode("")
+            self.active_animation = "NONE"
+            audio_engine.configure(
+                label,
+                system_device_id=preferences.system_device_id,
+                microphone_device_id=preferences.microphone_device_id,
+            )
+            director.select(self.active_program)
+            self.live_dot.color = PALETTE["teal"]
+            self.live_label.text = f"{self.active_program} LIVE"
+            self.live_label.color = _rgba(PALETTE["teal"])
+            self.set_status(f"{label} ANALYSIS STARTED  •  NOT RECORDING")
+        self._sync_buttons()
+        self._save()
 
-    def on_animation_pressed(self, label):
+    def on_program(self, label):
+        self.active_program = label
+        if self.active_source != "OFF":
+            director.select(label)
+            self.live_label.text = f"{label} LIVE"
+            self.set_status(f"AUDIO PROGRAM {label}  •  250 MS COHESIVE TRANSITION")
+        else:
+            self.set_status(f"{label} ARMED  •  SELECT AN AUDIO SOURCE")
+        self._sync_buttons()
+        self._save()
+
+    def on_manual_motion(self, label):
+        self.active_source = "OFF"
+        audio_engine.configure(AudioSourceMode.OFF)
+        director.select(None)
         self.active_animation = label
         mc.set_animation_mode(ANIMATION_VALUES[label])
-        self._apply_wave_value()
-        self._sync_active_states()
+        self._apply_wave()
+        self.live_dot.color = PALETTE["line"]
+        self.live_label.text = "AUDIO OFF"
+        self.live_label.color = _rgba(PALETTE["muted"])
+        self._sync_buttons()
+        self._save()
+        self.set_status(f"MANUAL MOTION {label}")
 
-        lamp_colors = {
-            "WAVE": PALETTE["teal"],
-            "SPIN": PALETTE["red"],
-            "PULSE": PALETTE["blue"],
-            "NONE": (38, 44, 47),
-        }
-        led_lamp.color = lamp_colors[label]
-        self.led_halo.color = lamp_colors[label] if label != "NONE" else PALETTE["line"]
-        self.set_status(f"MOTION PROGRAM {label}")
+    def on_particle(self, mode):
+        self.active_particle = mode
+        mc.set_particle_mode(mode)
+        self._sync_buttons()
+        self.set_status(f"PARTICLE LIMIT {mode}")
 
-    def _apply_wave_value(self):
+    def on_sensitivity(self, value):
+        global knob_wave_value
+        director.sensitivity = float(value)
+        knob_wave_value = float(value)
+        self._apply_wave()
+        self._save()
+        self.set_status(f"SENSITIVITY {value:.2f}")
+
+    def on_reactivity(self, value):
+        director.reactivity = float(value)
+        self._save()
+        self.set_status(f"REACTIVITY {value:.2f}")
+
+    def on_detail(self, value):
+        global knob_detail_value
+        knob_detail_value = float(round(value))
+        faces = 20 * (4 ** int(knob_detail_value))
+        self.set_status(f"GLOBE DETAIL {int(knob_detail_value)}  •  {faces} FACES ON NEXT ROUTE")
+
+    def on_apex(self, angle):
+        global turntable_angle
+        turntable_angle = float(angle)
+        offset = 0.18 + (turntable_angle % 360.0) / 360.0 * 0.7
+        self.set_status(f"GLOBE APEX OFFSET {offset:.2f}")
+
+    def _apply_wave(self):
         if self.active_animation not in ("WAVE", "PULSE"):
             return
         multiplier = 1.65 if self.active_animation == "PULSE" else 1.0
@@ -682,145 +567,179 @@ class SwitchboardWindow(pyglet.window.Window):
             if pyramid.physics.wave_axis_enable["y"]:
                 pyramid.physics.wave_amplitude["y"] = knob_wave_value * multiplier
 
-    def on_knob_wave_drag(self, new_value):
-        global knob_wave_value
-        knob_wave_value = float(new_value)
-        self._apply_wave_value()
-        self.set_status(f"WAVE AMPLITUDE  {knob_wave_value:.2f}", duration=2.0)
+    def cycle_system_device(self):
+        self.system_devices, self.microphone_devices = audio_engine.devices()
+        preferences.system_device_id = self._next_device(self.system_devices, preferences.system_device_id)
+        self._update_device_names()
+        if self.active_source in ("SYSTEM", "BOTH"):
+            self.on_source(self.active_source)
+        self._save()
 
-    def on_knob_subdiv_drag(self, new_value):
-        global knob_subdiv_value
-        knob_subdiv_value = float(int(round(new_value)))
-        faces = 20 * (4 ** int(knob_subdiv_value))
-        self.set_status(
-            f"GLOBE DETAIL  {int(knob_subdiv_value)}  •  {faces} FACES ON NEXT ROUTE",
-            duration=2.0,
-        )
+    def cycle_microphone_device(self):
+        self.system_devices, self.microphone_devices = audio_engine.devices()
+        preferences.microphone_device_id = self._next_device(self.microphone_devices, preferences.microphone_device_id)
+        self._update_device_names()
+        if self.active_source in ("MIC", "BOTH"):
+            self.on_source(self.active_source)
+        self._save()
 
-    def on_turntable_spin(self, angle):
-        global turntable_angle
-        turntable_angle = float(angle)
-        offset = 0.18 + (turntable_angle % 360.0) / 360.0 * 0.7
-        self.set_status(f"GLOBE APEX OFFSET  {offset:.2f}", duration=2.0)
+    @staticmethod
+    def _next_device(devices, current):
+        if not devices:
+            return None
+        ids = [item.identifier for item in devices]
+        return ids[(ids.index(current) + 1) % len(ids)] if current in ids else ids[0]
+
+    def _update_device_names(self):
+        system = next((item for item in self.system_devices if item.identifier == preferences.system_device_id), None)
+        microphone = next((item for item in self.microphone_devices if item.identifier == preferences.microphone_device_id), None)
+        if system is None and self.system_devices:
+            system = self.system_devices[0]
+            preferences.system_device_id = system.identifier
+        if microphone is None and self.microphone_devices:
+            microphone = self.microphone_devices[0]
+            preferences.microphone_device_id = microphone.identifier
+        self.system_name.text = "SYSTEM  " + _short_name(system.name if system else "NO LOOPBACK ENDPOINT")
+        self.mic_name.text = "MIC     " + _short_name(microphone.name if microphone else "NO INPUT ENDPOINT")
+
+    def toggle_reduced_motion(self):
+        director.reduced_motion = not director.reduced_motion
+        self.reduced_button.set_active(director.reduced_motion)
+        self._save()
+        self.set_status("REDUCED MOTION " + ("ON" if director.reduced_motion else "OFF"))
+
+    def update_audio_status(self, dt):
+        del dt
+        frame = audio_engine.snapshot()
+        status = audio_engine.status()
+        self.system_meter.width = int(244 * frame.system.rms)
+        self.mic_meter.width = int(244 * frame.microphone.rms)
+        self.system_meter.color = PALETTE["teal"] if frame.system.active else PALETTE["line"]
+        self.mic_meter.color = PALETTE["amber"] if frame.microphone.active else PALETTE["line"]
+        self.telemetry.text = f"{frame.capture_latency_ms:4.1f} MS  •  {frame.dropped_windows} DROPPED  •  {status['backend']}"
+        if self.active_source != "OFF":
+            system_state = status["system"].state
+            mic_state = status["microphone"].state
+            if self.active_source in ("SYSTEM", "BOTH") and system_state == "unavailable":
+                self.live_dot.color = PALETTE["red"]
+                self.live_label.text = "SYSTEM UNAVAILABLE"
+            elif self.active_source in ("MIC", "BOTH") and mic_state == "unavailable":
+                self.live_dot.color = PALETTE["red"]
+                self.live_label.text = "MIC UNAVAILABLE"
+
+    def _shutdown(self):
+        pyglet.clock.unschedule(self.update_audio_status)
+        audio_engine.shutdown()
+        pyglet.app.exit()
+
+    def on_close(self):
+        self._shutdown()
 
 
 class VisualizationWindow(pyglet.window.Window):
-    """Live 3D stage for the selected formation and its signal trace."""
+    """The dominant live canvas; wireframes rest white and react individually."""
 
     def __init__(self, width=900, height=650, title="Rainbow Starburst — 3D Signal"):
         super().__init__(width, height, title, resizable=True, vsync=True)
         self.set_minimum_size(560, 420)
         self.start_time = time.time()
-        self.draw_dist = 0.0
-        self.drawing_forward = True
-        self.draw_speed = 8.0
+        self.draw_distance = 0.0
+        self.draw_speed = 10.0
         self.camera_distance = 14.0
         self.scene_name = "Star"
         self.paused = False
-        self.cursor_world = np.zeros(3, dtype=float)
+        self.cursor_world = np.zeros(3)
         self.cursor_visible = False
-
+        self.particle_accumulator = np.zeros(len(mc.pyramids))
         rng = random.Random(86)
         self.stars = [
-            (
-                rng.uniform(-14.0, 14.0),
-                rng.uniform(-6.0, 11.0),
-                rng.uniform(-12.0, -2.0),
-                rng.uniform(0.25, 0.8),
-            )
+            (rng.uniform(-14, 14), rng.uniform(-6, 11), rng.uniform(-12, -2), rng.uniform(0.25, 0.8))
             for _ in range(120)
         ]
-
-        self.hud_batch = pyglet.graphics.Batch()
+        self.hud = pyglet.graphics.Batch()
         self.hud_brand = pyglet.text.Label(
-            "RAINBOW / STARBURST",
-            x=26,
-            y=height - 30,
-            anchor_x="left",
-            anchor_y="top",
-            font_name="Segoe UI",
-            font_size=13,
-            color=_rgba(PALETTE["cream"]),
-            batch=self.hud_batch,
+            "RAINBOW / STARBURST", x=26, y=height - 30, anchor_y="top",
+            font_name="Segoe UI", font_size=13, color=_rgba(PALETTE["cream"]), batch=self.hud,
         )
         self.hud_scene = pyglet.text.Label(
-            "",
-            x=26,
-            y=height - 55,
-            anchor_x="left",
-            anchor_y="top",
-            font_name="Consolas",
-            font_size=9,
-            color=_rgba(PALETTE["teal"]),
-            batch=self.hud_batch,
+            "", x=26, y=height - 55, anchor_y="top", font_name="Consolas",
+            font_size=9, color=_rgba(PALETTE["teal"]), batch=self.hud,
         )
         self.hud_help = pyglet.text.Label(
             "CLICK: PARTICLE BURST   •   SCROLL: CAMERA   •   SPACE: PAUSE",
-            x=26,
-            y=22,
-            anchor_x="left",
-            anchor_y="bottom",
-            font_name="Segoe UI",
-            font_size=8,
-            color=_rgba(PALETTE["muted"]),
-            batch=self.hud_batch,
+            x=26, y=22, anchor_y="bottom", font_name="Segoe UI", font_size=8,
+            color=_rgba(PALETTE["muted"]), batch=self.hud,
         )
         self._update_hud()
         pyglet.clock.schedule_interval(self.update, 1.0 / 60.0)
 
     def set_scene(self, name):
         self.scene_name = name
-        self.draw_dist = 0.0
-        self.drawing_forward = True
+        self.draw_distance = 0.0
+        self.particle_accumulator = np.zeros(len(mc.pyramids))
         self._update_hud()
 
     def _update_hud(self):
+        mode = director.active_name or (ui_window.active_animation if ui_window else "MANUAL")
+        source = ui_window.active_source if ui_window else "OFF"
         paused = "  •  PAUSED" if self.paused else ""
-        self.hud_scene.text = (
-            f"{self.scene_name.upper()}  •  {len(mc.pyramids)} PYRAMIDS"
-            f"  •  PARTICLES {mc.current_particle_mode}{paused}"
-        )
+        self.hud_scene.text = f"{self.scene_name.upper()}  •  {len(mc.pyramids)} PYRAMIDS  •  {source}/{mode}{paused}"
 
     def update(self, dt):
         if self.paused:
             return
-        dt = min(dt, 0.05)
-        current_time = time.time() - self.start_time
-        mc.update(dt, current_time)
-        self.draw_dist += self.draw_speed * dt * (1.0 if self.drawing_forward else -1.0)
+        dt = min(float(dt), 0.05)
+        now = time.time() - self.start_time
+        mc.update(dt, now)
+        state = director.update(dt, now, audio_engine.snapshot())
+        self.draw_distance += self.draw_speed * dt * (0.35 + 1.65 * state.route_energy)
+        self._emit_reactive_particles(state, dt)
         self._update_hud()
+
+    def _emit_reactive_particles(self, state, dt):
+        if not director.active or not len(state.particle_rate):
+            return
+        if len(self.particle_accumulator) != len(state.particle_rate):
+            self.particle_accumulator = np.zeros(len(state.particle_rate))
+        self.particle_accumulator += state.particle_rate * dt
+        ready = np.flatnonzero(self.particle_accumulator >= 1.0)
+        for index in ready[:12]:
+            count = min(4, int(self.particle_accumulator[index]))
+            self.particle_accumulator[index] -= count
+            path = self._display_path(int(index))
+            origin = path.mean(axis=0) if len(path) else director.topology.centers[index]
+            mc.spawn_particles(count, origin)
+
+    def _display_path(self, index):
+        if director.active and index < director.topology.count:
+            return apply_render_state(director.topology.home_paths[index], director.topology, index, director.output)
+        return np.asarray(mc.pyramids[index].get_transformed_path(), dtype=float)
 
     def on_draw(self):
         glViewport(0, 0, self.width, self.height)
-        glClearColor(0.012, 0.018, 0.028, 1.0)
+        glClearColor(0.008, 0.013, 0.021, 1.0)
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
         glEnable(GL_DEPTH_TEST)
         glEnable(GL_BLEND)
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
         glDisable(GL_CULL_FACE)
-
         glMatrixMode(GL_PROJECTION)
         glLoadIdentity()
-        aspect = float(self.width) / max(1.0, float(self.height))
-        gluPerspective(58.0, aspect, 0.1, 100.0)
-
+        gluPerspective(58.0, float(self.width) / max(1.0, float(self.height)), 0.1, 100.0)
         glMatrixMode(GL_MODELVIEW)
         glLoadIdentity()
         gluLookAt(0.0, 8.5, self.camera_distance, 0.0, 0.4, 0.0, 0.0, 1.0, 0.0)
-
         now = time.time() - self.start_time
         glRotatef(now * 8.0, 0.0, 1.0, 0.0)
-
         self.draw_starfield()
         self.draw_floor_grid()
         self.draw_pyramids()
-        self.draw_rainbow_path()
+        self.draw_signal_trace()
         self.draw_particles()
         if self.cursor_visible:
             self.draw_cursor_marker()
-
         glDisable(GL_DEPTH_TEST)
-        self.hud_batch.draw()
+        self.hud.draw()
 
     def draw_starfield(self):
         glPointSize(2.0)
@@ -843,59 +762,72 @@ class VisualizationWindow(pyglet.window.Window):
         glEnd()
 
     def draw_pyramids(self):
-        glLineWidth(1.5)
-        glColor4f(1.0, 1.0, 1.0, 0.68)
-        for pyramid in mc.pyramids:
-            path = pyramid.get_transformed_path()
+        state = director.output
+        for index in range(len(mc.pyramids)):
+            path = self._display_path(index)
             if len(path) < 2:
                 continue
+            if director.active:
+                accent = _rainbow_color(state.accent_hue[index])
+                mix = float(state.accent_mix[index])
+                color = tuple(1.0 + (channel - 1.0) * mix for channel in accent)
+                alpha = float(state.line_alpha[index])
+                width = float(state.line_width[index])
+            else:
+                color, alpha, width = (1.0, 1.0, 1.0), 0.68, 1.5
+            glLineWidth(width)
+            glColor4f(*color, alpha)
             glBegin(GL_LINE_STRIP)
             for point in path:
-                glVertex3f(float(point[0]), float(point[1]), float(point[2]))
+                glVertex3f(*point)
             glEnd()
 
-    def draw_rainbow_path(self):
-        points, total_length, distances = mc.build_global_path(
-            close_loop=False,
-            star_bridge=False,
-        )
-        if len(points) < 2 or total_length <= 1e-9:
+    def _trace_points(self):
+        if director.active:
+            if director.output.route_energy < 0.015:
+                return []
+            route = director.output.route[:96]
+            points = []
+            for index in route:
+                if 0 <= index < len(mc.pyramids):
+                    path = self._display_path(index)
+                    if len(path):
+                        if points:
+                            points.append(path[0])
+                        points.extend(path)
+            return points
+        points, _, _ = mc.build_global_path(close_loop=False, star_bridge=False)
+        return points
+
+    def draw_signal_trace(self):
+        points = self._trace_points()
+        if len(points) < 2:
             return
-
-        if self.draw_dist > total_length:
-            self.draw_dist = total_length
-            self.drawing_forward = False
-        elif self.draw_dist < 0.0:
-            self.draw_dist = 0.0
-            self.drawing_forward = True
-
-        glLineWidth(3.0)
+        lengths = np.linalg.norm(np.diff(np.asarray(points), axis=0), axis=1)
+        distances = np.concatenate(([0.0], np.cumsum(lengths)))
+        total = float(distances[-1])
+        if total <= 1e-9:
+            return
+        draw_to = self.draw_distance % total
+        alpha = 0.35 + 0.65 * (director.output.route_energy if director.active else 1.0)
+        glLineWidth(2.5 + (1.2 * director.output.route_energy if director.active else 0.5))
         glBegin(GL_LINE_STRIP)
         for index in range(len(points) - 1):
-            segment_start = distances[index]
-            segment_end = distances[index + 1]
-            if segment_start > self.draw_dist:
+            if distances[index] > draw_to:
                 break
-            point_a = points[index]
-            point_b = points[index + 1]
-
-            fraction_a = segment_start / total_length
-            glColor3f(*_rainbow_color(fraction_a))
-            glVertex3f(float(point_a[0]), float(point_a[1]), float(point_a[2]))
-
-            if segment_end <= self.draw_dist:
-                fraction_b = segment_end / total_length
-                glColor3f(*_rainbow_color(fraction_b))
-                glVertex3f(float(point_b[0]), float(point_b[1]), float(point_b[2]))
-                continue
-
-            segment_length = segment_end - segment_start
-            if segment_length > 1e-9:
-                alpha = (self.draw_dist - segment_start) / segment_length
-                midpoint = point_a + alpha * (point_b - point_a)
-                glColor3f(*_rainbow_color(self.draw_dist / total_length))
-                glVertex3f(float(midpoint[0]), float(midpoint[1]), float(midpoint[2]))
-            break
+            point_a, point_b = points[index], points[index + 1]
+            glColor4f(*_rainbow_color(distances[index] / total), alpha)
+            glVertex3f(*point_a)
+            if distances[index + 1] <= draw_to:
+                glColor4f(*_rainbow_color(distances[index + 1] / total), alpha)
+                glVertex3f(*point_b)
+            else:
+                segment = max(1e-9, distances[index + 1] - distances[index])
+                fraction = (draw_to - distances[index]) / segment
+                midpoint = point_a + fraction * (point_b - point_a)
+                glColor4f(*_rainbow_color(draw_to / total), alpha)
+                glVertex3f(*midpoint)
+                break
         glEnd()
 
     def draw_particles(self):
@@ -921,34 +853,39 @@ class VisualizationWindow(pyglet.window.Window):
         glEnd()
 
     def _screen_to_world(self, x, y):
-        normalized_x = (x / max(1.0, self.width) - 0.5) * 13.0
-        normalized_z = (y / max(1.0, self.height) - 0.5) * 10.0
-        return np.array([normalized_x, 0.35, -normalized_z], dtype=float)
+        return np.array([
+            (x / max(1.0, self.width) - 0.5) * 13.0,
+            0.35,
+            -(y / max(1.0, self.height) - 0.5) * 10.0,
+        ])
 
     def on_mouse_motion(self, x, y, dx, dy):
+        del dx, dy
         self.cursor_world = self._screen_to_world(x, y)
         self.cursor_visible = True
 
     def on_mouse_press(self, x, y, button, modifiers):
+        del modifiers
         if button == mouse.LEFT:
             self.cursor_world = self._screen_to_world(x, y)
             self.cursor_visible = True
             mc.handle_collision(self.cursor_world)
-            self._update_hud()
 
     def on_mouse_scroll(self, x, y, scroll_x, scroll_y):
+        del x, y, scroll_x
         self.camera_distance = max(7.0, min(24.0, self.camera_distance - scroll_y * 0.8))
 
     def on_key_press(self, symbol, modifiers):
+        del modifiers
         if symbol == key.SPACE:
             self.paused = not self.paused
-            self._update_hud()
         elif symbol == key.R:
             self.camera_distance = 14.0
-            self.draw_dist = 0.0
-            self.drawing_forward = True
+            self.draw_distance = 0.0
         elif symbol == key.ESCAPE:
+            audio_engine.shutdown()
             pyglet.app.exit()
+        self._update_hud()
 
     def on_resize(self, width, height):
         super().on_resize(width, height)
@@ -957,39 +894,32 @@ class VisualizationWindow(pyglet.window.Window):
 
     def on_close(self):
         pyglet.clock.unschedule(self.update)
+        audio_engine.shutdown()
         pyglet.app.exit()
 
 
 def run_gui():
-    """Launch the switchboard and its companion visualization window."""
+    """Launch the private-by-default switchboard and companion stage."""
     global ui_window, visualization_window
-
-    # A scene switch is also a programming operation: when it returns, the
-    # exported files must already match the active formation exactly.
     mc.configure_export(enabled=True, async_mode=False)
     mc.init_star_formation(subdivisions=1, core_radius=3.0, spike_height=2.4)
     mc.set_animation_mode(ANIMATION_WAVE_Y)
     for pyramid in mc.pyramids:
         pyramid.physics.wave_amplitude["y"] = knob_wave_value
-
+    director.set_formation(mc.pyramids)
     ui_window = SwitchboardWindow()
     visualization_window = VisualizationWindow()
-
     screen = ui_window.screen
-    gap = 20
+    gap = 18
     total_width = ui_window.width + visualization_window.width + gap
-    if screen.width >= total_width + 60:
-        left = max(30, (screen.width - total_width) // 2)
-        bottom = max(40, (screen.height - max(ui_window.height, visualization_window.height)) // 2)
-        ui_window.set_location(left, bottom + 15)
-        visualization_window.set_location(left + ui_window.width + gap, bottom)
+    if screen.width >= total_width + 40:
+        left = max(20, (screen.width - total_width) // 2)
+        bottom = max(24, (screen.height - max(ui_window.height, visualization_window.height)) // 2)
+        ui_window.set_location(left, bottom)
+        visualization_window.set_location(left + ui_window.width + gap, bottom + 54)
     else:
-        ui_window.set_location(30, max(30, screen.height - ui_window.height - 60))
-        visualization_window.set_location(
-            max(60, screen.width - visualization_window.width - 40),
-            40,
-        )
-
+        ui_window.set_location(24, max(24, screen.height - ui_window.height - 50))
+        visualization_window.set_location(max(45, screen.width - visualization_window.width - 30), 30)
     pyglet.app.run()
 
 

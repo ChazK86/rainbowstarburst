@@ -9,7 +9,20 @@ Rainbow Starburst should become a local, low-latency instrument that turns any s
 - system output and microphone at the same time;
 - silence, device changes, and unavailable audio hardware without destabilizing the visualization.
 
-This is an implementation plan, not a loose idea list. It defines the common architecture first, then specifies each creative program in terms of inputs, pyramid mapping, algorithms, controls, failure behavior, tests, and completion criteria.
+This document is the design and acceptance specification for the implemented system. It defines the common architecture first, then specifies each creative program in terms of inputs, pyramid mapping, algorithms, controls, failure behavior, tests, and completion criteria.
+
+## Implementation status
+
+The cohesive baseline described here is implemented on the audio-reactivity branch:
+
+- bounded callback ring buffers, WASAPI loopback, microphone capture, simultaneous independent streams, deterministic demo input, endpoint cycling, and automatic retry;
+- normalized FFT bands, multiscale levels, centroid, spectral flux, onset/refractory behavior, beat phase/confidence, stereo balance/width, pitch classes, octave position, and spectral flatness;
+- immutable formation topology, exact shared-edge adjacency, fallback proximity graphs, render-state bounds, 250 ms program crossfades, reduced motion, and exact 1.5-second silence reset;
+- Spectrum Crown, Beat Bloom, Conversation Orbit, Cinematic Weather, Game Radar, Signal Relay, and Harmonic Aurora;
+- switchboard source/program/device/response controls, privacy status, level meters, latency/drop telemetry, and preserved manual programs;
+- deterministic tests spanning generated signals, topology, render invariants, all program/formation combinations, and fixed-step frame-rate equivalence.
+
+The milestone and pull-request sections remain below as architectural history and a checklist for future refinement. Real-hardware endurance and installer validation should still be repeated for every release machine.
 
 ## Product principles
 
@@ -79,7 +92,7 @@ flowchart LR
 - Only the render thread updates animation state, controller state, pyglet objects, or OpenGL.
 - A full audio queue drops the oldest analysis window; it never blocks a PortAudio callback.
 
-### Proposed module layout
+### Implemented module layout
 
 ```text
 rainbowstarburst/

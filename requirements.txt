@@ -1,3 +1,4 @@
 numpy
 pyglet
 PyOpenGL
+PyAudioWPatch; platform_system == "Windows"
